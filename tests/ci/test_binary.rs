@@ -6,6 +6,8 @@
 //
 // Copyright 2024 MonetDB Foundation
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use monetdb::Endian;
 
@@ -52,5 +54,41 @@ fn test_autocommit_control() -> Result<()> {
     assert!(!connection.server_info()?.autocommit);
     connection.set_autocommit(true)?;
     assert!(connection.server_info()?.autocommit);
+    Ok(())
+}
+
+#[test]
+fn test_binary_uploads() -> Result<()> {
+    let connection = get_server().connect()?;
+    let mut cursor = connection.cursor();
+    cursor.execute("DROP TABLE IF EXISTS adbc_binary_upload")?;
+    cursor.execute("CREATE TABLE adbc_binary_upload(i INT, s VARCHAR(8))")?;
+
+    let ints = [
+        1i32.to_le_bytes(),
+        2i32.to_le_bytes(),
+        i32::MIN.to_le_bytes(),
+    ]
+    .concat();
+    let strings = b"one\0two\0\x80\0".to_vec();
+    let uploads = HashMap::from([("c0".into(), ints), ("c1".into(), strings)]);
+    cursor.execute_with_binary_uploads(
+        "COPY LITTLE ENDIAN BINARY INTO adbc_binary_upload FROM 'c0', 'c1' ON CLIENT",
+        &uploads,
+    )?;
+    assert_eq!(cursor.affected_rows(), Some(3));
+
+    cursor.execute("SELECT i, s FROM adbc_binary_upload ORDER BY i NULLS LAST")?;
+    assert!(cursor.next_row()?);
+    assert_eq!(cursor.get_i32(0)?, Some(1));
+    assert_eq!(cursor.get_str(1)?, Some("one"));
+    assert!(cursor.next_row()?);
+    assert_eq!(cursor.get_i32(0)?, Some(2));
+    assert_eq!(cursor.get_str(1)?, Some("two"));
+    assert!(cursor.next_row()?);
+    assert_eq!(cursor.get_i32(0)?, None);
+    assert_eq!(cursor.get_str(1)?, None);
+    assert!(!cursor.next_row()?);
+    cursor.execute("DROP TABLE adbc_binary_upload")?;
     Ok(())
 }

@@ -11,6 +11,7 @@
 pub(crate) mod delayed;
 pub(crate) mod replies;
 pub(crate) mod rowset;
+mod upload;
 
 use std::borrow::Cow;
 use std::mem;
@@ -66,6 +67,9 @@ pub enum CursorError {
         count: usize,
         total_rows: u64,
     },
+    /// The server requested an invalid or unavailable client-side file.
+    #[error("file transfer failed: {0}")]
+    FileTransfer(String),
 }
 
 pub type CursorResult<T> = Result<T, CursorError>;
@@ -170,6 +174,28 @@ impl Cursor {
             return Err(err);
         }
 
+        Ok(())
+    }
+
+    /// Execute SQL while serving named in-memory files requested through
+    /// MonetDB's binary `rb` file-transfer subprotocol.
+    pub fn execute_with_binary_uploads(
+        &mut self,
+        statements: &str,
+        uploads: &std::collections::HashMap<String, Vec<u8>>,
+    ) -> CursorResult<()> {
+        self.exhaust()?;
+
+        let mut vec = self.replies.take_buffer();
+        let command = &[b"s", statements.as_bytes(), b"\n;"];
+        self.command_with_uploads(command, &mut vec, uploads)?;
+
+        let error = ReplyParser::detect_errors(&vec);
+        self.replies = ReplyParser::new(vec)?;
+        if let Err(error) = error {
+            self.exhaust()?;
+            return Err(error);
+        }
         Ok(())
     }
 
