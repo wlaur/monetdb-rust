@@ -17,7 +17,8 @@ use std::{
 use crate::{
     cursor::{delayed::DelayedCommands, Cursor, CursorError, CursorResult},
     framing::{
-        connecting::{establish_connection, ConnectResult},
+        connecting::{establish_connection, ConnectResult, Endian},
+        reading::MapiReader,
         ServerSock, ServerState,
     },
     parms::Parameters,
@@ -115,6 +116,59 @@ impl Connection {
         })?;
         Ok(new_metadata)
     }
+
+    /// Return protocol capabilities advertised by the server during login.
+    pub fn server_info(&self) -> CursorResult<ServerInfo> {
+        let mut info = None;
+        self.0.run_locked(|state, _delayed, sock| {
+            info = Some(ServerInfo {
+                endian: state.server_endian,
+                binary_level: state.binary_level,
+                autocommit: state.initial_auto_commit,
+                reply_size: state.reply_size,
+                time_zone_seconds: state.time_zone_seconds,
+            });
+            Ok(sock)
+        })?;
+        Ok(info.expect("connection state is available while locked"))
+    }
+
+    /// Enable or disable server-side autocommit for this connection.
+    pub fn set_autocommit(&self, enabled: bool) -> CursorResult<()> {
+        self.0.run_locked(|state, delayed, mut sock| {
+            let mut response = Vec::new();
+            sock = delayed.send_delayed_plus(
+                sock,
+                &[format!("Xauto_commit {}", i32::from(enabled)).as_bytes()],
+            )?;
+            sock = delayed.recv_delayed(sock, &mut response)?;
+            response.clear();
+            sock = MapiReader::to_end(sock, &mut response)?;
+            let expected = if enabled { b"&4 t" } else { b"&4 f" };
+            if !response.is_empty() && !response.starts_with(expected) {
+                if let Some(message) = response.strip_prefix(b"!") {
+                    return Err(CursorError::Server(
+                        String::from_utf8_lossy(message).trim().to_owned(),
+                    ));
+                }
+                return Err(CursorError::BadReply(
+                    crate::cursor::replies::BadReply::UnexpectedHeader(response.into()),
+                ));
+            }
+            state.initial_auto_commit = enabled;
+            Ok(sock)
+        })
+    }
+}
+
+/// Protocol capabilities negotiated for a live connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServerInfo {
+    pub endian: Endian,
+    pub binary_level: u16,
+    pub autocommit: bool,
+    pub reply_size: usize,
+    pub time_zone_seconds: i32,
 }
 
 impl Drop for Connection {

@@ -11,6 +11,7 @@
 pub(crate) mod delayed;
 pub(crate) mod replies;
 pub(crate) mod rowset;
+mod upload;
 
 use std::borrow::Cow;
 use std::mem;
@@ -59,6 +60,19 @@ pub enum CursorError {
     },
     #[error("could not retrieve server metadata: {0}")]
     Metadata(&'static str),
+    /// A binary fetch requested rows outside the current result set.
+    #[error("binary fetch [{start}, {end}) exceeds result set with {total_rows} rows", end = start.saturating_add(*count as u64))]
+    InvalidRange {
+        start: u64,
+        count: usize,
+        total_rows: u64,
+    },
+    /// The server requested an invalid or unavailable client-side file.
+    #[error("file transfer failed: {0}")]
+    FileTransfer(String),
+    /// Binary export was requested for a PREPARE metadata result.
+    #[error("prepared statement metadata cannot be fetched with Xexportbin")]
+    PreparedResult,
 }
 
 pub type CursorResult<T> = Result<T, CursorError>;
@@ -124,6 +138,14 @@ pub struct Cursor {
     reply_size: usize,
 }
 
+/// Metadata needed to fetch a result set through `Xexportbin`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinaryResult {
+    pub result_id: u64,
+    pub total_rows: u64,
+    pub columns: Vec<ResultColumn>,
+}
+
 impl Cursor {
     pub(crate) fn new(conn: Arc<Conn>) -> Self {
         Cursor {
@@ -155,6 +177,62 @@ impl Cursor {
             return Err(err);
         }
 
+        Ok(())
+    }
+
+    /// Execute SQL while serving named in-memory files requested through
+    /// MonetDB's binary `rb` file-transfer subprotocol.
+    pub fn execute_with_binary_uploads(
+        &mut self,
+        statements: &str,
+        uploads: &std::collections::HashMap<String, Vec<u8>>,
+    ) -> CursorResult<()> {
+        self.exhaust()?;
+
+        let mut vec = self.replies.take_buffer();
+        let command = &[b"s", statements.as_bytes(), b"\n;"];
+        self.command_with_uploads(command, &mut vec, |filename| {
+            uploads
+                .get(filename)
+                .map(|data| Cow::Borrowed(data.as_slice()))
+                .ok_or_else(|| {
+                    CursorError::FileTransfer(format!("server requested unknown file {filename:?}"))
+                })
+        })?;
+
+        let error = ReplyParser::detect_errors(&vec);
+        self.replies = ReplyParser::new(vec)?;
+        if let Err(error) = error {
+            self.exhaust()?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Execute SQL while producing each named binary upload only when MonetDB
+    /// requests it through the `rb` file-transfer subprotocol.
+    pub fn execute_with_binary_uploads_lazy<F>(
+        &mut self,
+        statements: &str,
+        mut upload: F,
+    ) -> CursorResult<()>
+    where
+        F: FnMut(&str) -> CursorResult<Vec<u8>>,
+    {
+        self.exhaust()?;
+
+        let mut vec = self.replies.take_buffer();
+        let command = &[b"s", statements.as_bytes(), b"\n;"];
+        self.command_with_uploads(command, &mut vec, |filename| {
+            upload(filename).map(Cow::Owned)
+        })?;
+
+        let error = ReplyParser::detect_errors(&vec);
+        self.replies = ReplyParser::new(vec)?;
+        if let Err(error) = error {
+            self.exhaust()?;
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -250,6 +328,61 @@ impl Cursor {
         } else {
             &[]
         }
+    }
+
+    /// Return the server-side statement id when the current result is from PREPARE.
+    pub fn prepared_statement_id(&self) -> Option<u64> {
+        match &self.replies {
+            ReplyParser::Data(ResultSet {
+                result_id,
+                prepared: true,
+                ..
+            }) => Some(*result_id),
+            _ => None,
+        }
+    }
+
+    /// Return metadata for the current result set.
+    pub fn binary_result(&mut self) -> CursorResult<BinaryResult> {
+        self.skip_to_result_set()?;
+        let result = self.result_set()?;
+        if result.prepared {
+            return Err(CursorError::PreparedResult);
+        }
+        Ok(BinaryResult {
+            result_id: result.result_id,
+            total_rows: result.total_rows,
+            columns: result.columns.clone(),
+        })
+    }
+
+    /// Fetch a row window using MonetDB's binary result-set protocol.
+    ///
+    /// The returned message is the complete `Xexportbin` payload, including
+    /// the `&6` header, aligned column buffers, table of contents, and trailing
+    /// table-of-contents offset described by `binary-resultset.rst`.
+    pub fn fetch_binary(&mut self, start: u64, count: usize) -> CursorResult<Vec<u8>> {
+        self.skip_to_result_set()?;
+        let result = self.result_set()?;
+        if result.prepared {
+            return Err(CursorError::PreparedResult);
+        }
+        if start > result.total_rows {
+            return Err(CursorError::InvalidRange {
+                start,
+                count,
+                total_rows: result.total_rows,
+            });
+        }
+        let available = result.total_rows - start;
+        let count = count.min(usize::try_from(available).unwrap_or(usize::MAX));
+        let command = format!("Xexportbin {} {start} {count}", result.result_id);
+        let mut response = Vec::new();
+        self.command(&[command.as_bytes()], &mut response)?;
+        if response.first() == Some(&b'!') {
+            ReplyParser::detect_errors(&response)?;
+        }
+        Ok(response)
     }
 
     /// Advance the cursor to the next available row in the result set,

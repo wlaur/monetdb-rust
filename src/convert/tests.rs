@@ -31,6 +31,7 @@ fn extract_from_fake_resultset<T: FromMonet + fmt::Debug>(
 
     let rs = ResultSet {
         result_id: 0,
+        prepared: false,
         next_row: 0,
         total_rows: 1,
         columns,

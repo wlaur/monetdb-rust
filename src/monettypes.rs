@@ -82,6 +82,12 @@ pub enum MonetType {
     Json,
     /// A UUID.
     Uuid,
+    /// A geometry value.
+    Geometry,
+    /// A geometry value with an additional coordinate dimension.
+    GeometryA,
+    /// An XML document or fragment.
+    Xml,
 }
 
 impl fmt::Display for MonetType {
@@ -112,6 +118,9 @@ impl fmt::Display for MonetType {
             Inet => f.write_str("INET"),
             Json => f.write_str("JSON"),
             Uuid => f.write_str("UUID"),
+            Geometry => f.write_str("GEOMETRY"),
+            GeometryA => f.write_str("GEOMETRYA"),
+            Xml => f.write_str("XML"),
         }
     }
 }
@@ -120,7 +129,7 @@ impl MonetType {
     /// Used while parsing result sets. Based on the name
     /// create a MonetType instance with parameters
     /// set to a dummy value.
-    pub(crate) fn prototype(code: &str) -> Option<Self> {
+    pub fn from_mapi_code(code: &str) -> Option<Self> {
         use MonetType::*;
         let typ = match code {
             "boolean" => Bool,
@@ -144,11 +153,34 @@ impl MonetType {
             "timestamptz" => TimestampTz,
             "blob" => Blob,
             "url" => Url,
-            "inet" => Inet,
+            "inet" | "inet4" | "inet6" => Inet,
             "json" => Json,
             "uuid" => Uuid,
+            "geometry" => Geometry,
+            "geometrya" => GeometryA,
+            "xml" => Xml,
             _ => return None,
         };
         Some(typ)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MonetType;
+
+    #[test]
+    fn recognizes_non_binary_sql_types() {
+        assert_eq!(
+            MonetType::from_mapi_code("geometry"),
+            Some(MonetType::Geometry)
+        );
+        assert_eq!(
+            MonetType::from_mapi_code("geometrya"),
+            Some(MonetType::GeometryA)
+        );
+        assert_eq!(MonetType::from_mapi_code("xml"), Some(MonetType::Xml));
+        assert_eq!(MonetType::from_mapi_code("inet4"), Some(MonetType::Inet));
+        assert_eq!(MonetType::from_mapi_code("inet6"), Some(MonetType::Inet));
     }
 }

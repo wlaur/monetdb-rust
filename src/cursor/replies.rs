@@ -8,7 +8,7 @@
 
 #![allow(dead_code)]
 
-use std::{error, iter, mem, str::FromStr};
+use std::{error, iter::repeat_n, mem, str::FromStr};
 
 use bstr::{BStr, BString, ByteSlice};
 use memchr::memmem;
@@ -261,6 +261,7 @@ pub enum ReplyParser {
 #[derive(Debug)]
 pub struct ResultSet {
     pub result_id: u64,
+    pub prepared: bool,
     pub next_row: u64,
     pub total_rows: u64,
     pub columns: Vec<ResultColumn>,
@@ -363,10 +364,11 @@ impl ReplyParser {
                 vec.clear();
                 Ok(ReplyParser::Exhausted(vec))
             }
-            [b'&', b'1', ..] => Self::parse_data(buf),
+            [b'&', b'1', ..] => Self::parse_data(buf, false),
             [b'&', b'2', ..] => Self::parse_successful_update(buf),
             [b'&', b'3', ..] => Self::parse_successful_other(buf),
             [b'&', b'4', ..] => Self::parse_autocommit_status(buf),
+            [b'&', b'5', ..] => Self::parse_data(buf, true),
             [b'!', ..] => Self::parse_error(buf),
             _ => {
                 let line = ahead.as_bstr().lines().next().unwrap();
@@ -433,7 +435,7 @@ impl ReplyParser {
         Ok(ReplyParser::Error(buf))
     }
 
-    fn parse_data(mut buf: ReplyBuf) -> RResult<ReplyParser> {
+    fn parse_data(mut buf: ReplyBuf, prepared: bool) -> RResult<ReplyParser> {
         let mut fields = [0; 4];
         Self::parse_header(&mut buf, &mut fields)?;
         let [result_id, rows_total, ncols, rows_included] = fields;
@@ -441,27 +443,25 @@ impl ReplyParser {
             return Err(BadReply::TooManyColumns(ncols));
         }
         let ncols = ncols as usize;
-        let to_close = (rows_included < rows_total).then_some(result_id);
+        let to_close = (!prepared && rows_included < rows_total).then_some(result_id);
 
-        let mut columns: Vec<ResultColumn> =
-            iter::repeat(ResultColumn::empty()).take(ncols).collect();
+        let mut columns: Vec<ResultColumn> = repeat_n(ResultColumn::empty(), ncols).collect();
 
         // parse the table_name header
         Self::parse_data_header(&mut buf, "table_name", &mut columns, &|col, s| {
-            col.name.push_str(s);
+            col.table_name.push_str(s);
             Ok(())
         })?;
 
         // parse the name header
         Self::parse_data_header(&mut buf, "name", &mut columns, &|col, s| {
-            col.name.push('.');
             col.name.push_str(s);
             Ok(())
         })?;
 
         // parse the type header
         Self::parse_data_header(&mut buf, "type", &mut columns, &|col, s| {
-            let Some(typ) = MonetType::prototype(s) else {
+            let Some(typ) = MonetType::from_mapi_code(s) else {
                 return Err(format!("unknown column type: {s}").into());
             };
             col.typ = typ;
@@ -491,6 +491,7 @@ impl ReplyParser {
         let row_set = RowSet::new(buf, columns.len());
         Ok(ReplyParser::Data(ResultSet {
             result_id,
+            prepared,
             next_row: 0,
             total_rows: rows_total,
             columns,
@@ -546,6 +547,7 @@ impl ReplyParser {
 /// Holds information about a column of a result set.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct ResultColumn {
+    pub(crate) table_name: String,
     pub(crate) name: String,
     pub(crate) typ: MonetType,
 }
@@ -557,6 +559,7 @@ impl ResultColumn {
 
     pub(crate) fn new(name: &str, typ: MonetType) -> Self {
         ResultColumn {
+            table_name: String::new(),
             name: name.into(),
             typ,
         }
@@ -565,6 +568,11 @@ impl ResultColumn {
     /// Return the name of the column.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Return the source table name, or an empty string for an expression.
+    pub fn table_name(&self) -> &str {
+        &self.table_name
     }
 
     /// Return the type of the column.
@@ -580,5 +588,38 @@ pub fn from_utf8<'a>(context: &'static str, bytes: &'a [u8]) -> RResult<&'a str>
     match std::str::from_utf8(bytes) {
         Ok(s) => Ok(s),
         Err(_) => Err(BadReply::Unicode(context)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReplyParser, ResultSet};
+
+    #[test]
+    fn parses_prepare_result_header() {
+        let response = concat!(
+            "&5 17 1 1 1\n",
+            "% .prepare # table_name\n",
+            "% type # name\n",
+            "% varchar # type\n",
+            "% 7 # length\n",
+            "% 0 0 # typesizes\n",
+            "[ \"hugeint\"\t]\n"
+        );
+        let parser = ReplyParser::new(response.as_bytes().to_vec()).unwrap();
+        let ReplyParser::Data(ResultSet {
+            result_id,
+            prepared,
+            total_rows,
+            to_close,
+            ..
+        }) = parser
+        else {
+            panic!("expected prepare result set");
+        };
+        assert_eq!(result_id, 17);
+        assert!(prepared);
+        assert_eq!(total_rows, 1);
+        assert_eq!(to_close, None);
     }
 }

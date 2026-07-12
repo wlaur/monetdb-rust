@@ -139,7 +139,7 @@ impl fmt::Write for MapiBuf {
 
 #[cfg(test)]
 mod tests {
-    use std::iter::{self, Map};
+    use std::iter::Map;
 
     use crate::util::referencedata::ReferenceData;
 
@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn test_complex() {
-        let aaa: Vec<u8> = iter::repeat(b'A').take(BLOCKSIZE).collect();
+        let aaa: Vec<u8> = std::iter::repeat_n(b'A', BLOCKSIZE).collect();
 
         let mut mb = MapiBuf::new();
         mb.append(b"12345");

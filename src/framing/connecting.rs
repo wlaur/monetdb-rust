@@ -325,7 +325,7 @@ fn challenge_response(
     )
     .unwrap();
 
-    let mut state = ServerState::new(prehash_algo_name);
+    let mut state = ServerState::new(prehash_algo_name, chal.endian, chal.binary);
     let mut delayed = DelayedCommands::new();
 
     if parms.language == "sql" {

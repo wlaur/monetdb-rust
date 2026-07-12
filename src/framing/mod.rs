@@ -17,7 +17,7 @@ use std::{error, fmt, io, net::TcpStream, sync::Arc};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 
-use crate::conn::InnerServerMetadata;
+use crate::{conn::InnerServerMetadata, framing::connecting::Endian};
 
 pub const BLOCKSIZE: usize = 8190;
 
@@ -65,16 +65,20 @@ pub struct ServerState {
     pub time_zone_seconds: i32,
     pub sql_metadata: Option<Arc<InnerServerMetadata>>,
     pub prehash_algo: &'static str,
+    pub server_endian: Endian,
+    pub binary_level: u16,
 }
 
 impl ServerState {
-    fn new(prehash_algo: &'static str) -> Self {
+    fn new(prehash_algo: &'static str, server_endian: Endian, binary_level: u16) -> Self {
         Self {
             initial_auto_commit: true,
             reply_size: 100,
             time_zone_seconds: 0,
             sql_metadata: None,
             prehash_algo,
+            server_endian,
+            binary_level,
         }
     }
 }
