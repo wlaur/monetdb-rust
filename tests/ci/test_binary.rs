@@ -92,3 +92,39 @@ fn test_binary_uploads() -> Result<()> {
     cursor.execute("DROP TABLE adbc_binary_upload")?;
     Ok(())
 }
+
+#[test]
+fn test_lazy_binary_uploads() -> Result<()> {
+    let connection = get_server().connect()?;
+    let mut cursor = connection.cursor();
+    cursor.execute("DROP TABLE IF EXISTS adbc_lazy_binary_upload")?;
+    cursor.execute("CREATE TABLE adbc_lazy_binary_upload(i INT, s VARCHAR(8))")?;
+
+    let mut requested = Vec::new();
+    cursor.execute_with_binary_uploads_lazy(
+        "COPY LITTLE ENDIAN BINARY INTO adbc_lazy_binary_upload FROM 'c0', 'c1' ON CLIENT",
+        |filename| {
+            requested.push(filename.to_owned());
+            match filename {
+                "c0" => Ok([1i32.to_le_bytes(), 2i32.to_le_bytes()].concat()),
+                "c1" => Ok(b"one\0two\0".to_vec()),
+                _ => Err(monetdb::CursorError::FileTransfer(format!(
+                    "unexpected file {filename:?}"
+                ))),
+            }
+        },
+    )?;
+    assert_eq!(requested, ["c0", "c1"]);
+    assert_eq!(cursor.affected_rows(), Some(2));
+
+    cursor.execute("SELECT i, s FROM adbc_lazy_binary_upload ORDER BY i")?;
+    assert!(cursor.next_row()?);
+    assert_eq!(cursor.get_i32(0)?, Some(1));
+    assert_eq!(cursor.get_str(1)?, Some("one"));
+    assert!(cursor.next_row()?);
+    assert_eq!(cursor.get_i32(0)?, Some(2));
+    assert_eq!(cursor.get_str(1)?, Some("two"));
+    assert!(!cursor.next_row()?);
+    cursor.execute("DROP TABLE adbc_lazy_binary_upload")?;
+    Ok(())
+}

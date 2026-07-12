@@ -6,7 +6,7 @@
 //
 // Copyright 2024 MonetDB Foundation
 
-use std::{collections::HashMap, io::Write};
+use std::{borrow::Cow, io::Write};
 
 use crate::framing::{reading::MapiReader, ServerSock, BLOCKSIZE};
 
@@ -17,12 +17,15 @@ const MORE: &[u8] = b"\x01\x02\n";
 const UPLOAD_CHUNK: usize = 1024 * 1024;
 
 impl Cursor {
-    pub(super) fn command_with_uploads(
+    pub(super) fn command_with_uploads<'a, F>(
         &mut self,
         command: &[&[u8]],
         response: &mut Vec<u8>,
-        uploads: &HashMap<String, Vec<u8>>,
-    ) -> CursorResult<()> {
+        mut upload: F,
+    ) -> CursorResult<()>
+    where
+        F: FnMut(&str) -> CursorResult<Cow<'a, [u8]>>,
+    {
         self.conn.run_locked(
             |_state,
              delayed: &mut DelayedCommands,
@@ -41,12 +44,8 @@ impl Cursor {
                             "unsupported server request {request:?}"
                         )));
                     };
-                    let Some(data) = uploads.get(filename) else {
-                        return Err(CursorError::FileTransfer(format!(
-                            "server requested unknown file {filename:?}"
-                        )));
-                    };
-                    sock = upload(sock, data)?;
+                    let data = upload(filename)?;
+                    sock = send_upload(sock, &data)?;
                 }
             },
         )
@@ -73,7 +72,7 @@ fn take_file_request(response: &mut Vec<u8>) -> CursorResult<Option<String>> {
     Ok(Some(command))
 }
 
-fn upload(mut sock: ServerSock, data: &[u8]) -> CursorResult<ServerSock> {
+fn send_upload(mut sock: ServerSock, data: &[u8]) -> CursorResult<ServerSock> {
     // A non-final message fragment containing just a newline accepts the
     // upload. See pymonetdb.filetransfer.uploads.Upload._raw and MonetDB's
     // clients/mapilib/mapi.c `rb FILE` handling.

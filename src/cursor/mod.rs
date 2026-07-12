@@ -191,7 +191,41 @@ impl Cursor {
 
         let mut vec = self.replies.take_buffer();
         let command = &[b"s", statements.as_bytes(), b"\n;"];
-        self.command_with_uploads(command, &mut vec, uploads)?;
+        self.command_with_uploads(command, &mut vec, |filename| {
+            uploads
+                .get(filename)
+                .map(|data| Cow::Borrowed(data.as_slice()))
+                .ok_or_else(|| {
+                    CursorError::FileTransfer(format!("server requested unknown file {filename:?}"))
+                })
+        })?;
+
+        let error = ReplyParser::detect_errors(&vec);
+        self.replies = ReplyParser::new(vec)?;
+        if let Err(error) = error {
+            self.exhaust()?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Execute SQL while producing each named binary upload only when MonetDB
+    /// requests it through the `rb` file-transfer subprotocol.
+    pub fn execute_with_binary_uploads_lazy<F>(
+        &mut self,
+        statements: &str,
+        mut upload: F,
+    ) -> CursorResult<()>
+    where
+        F: FnMut(&str) -> CursorResult<Vec<u8>>,
+    {
+        self.exhaust()?;
+
+        let mut vec = self.replies.take_buffer();
+        let command = &[b"s", statements.as_bytes(), b"\n;"];
+        self.command_with_uploads(command, &mut vec, |filename| {
+            upload(filename).map(Cow::Owned)
+        })?;
 
         let error = ReplyParser::detect_errors(&vec);
         self.replies = ReplyParser::new(vec)?;
