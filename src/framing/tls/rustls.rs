@@ -8,7 +8,8 @@
 
 use std::{io, sync::Arc};
 
-use rustls::{pki_types::ServerName, ClientConnection, StreamOwned};
+use rustls::{pki_types::ServerName, ClientConfig, ClientConnection, StreamOwned};
+use rustls_platform_verifier::ConfigVerifierExt;
 
 use crate::{
     framing::{
@@ -27,7 +28,7 @@ fn wrap_inner(
     sock: ServerSock,
 ) -> Result<ServerSock, Box<dyn std::error::Error>> {
     // we should really cache this
-    let config = Arc::new(rustls_platform_verifier::tls_config());
+    let config = Arc::new(ClientConfig::with_platform_verifier()?);
 
     let server_name = parms.connect_tcp.to_string();
     let server_name = ServerName::try_from(server_name)?;
