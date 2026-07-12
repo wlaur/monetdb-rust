@@ -59,6 +59,13 @@ pub enum CursorError {
     },
     #[error("could not retrieve server metadata: {0}")]
     Metadata(&'static str),
+    /// A binary fetch requested rows outside the current result set.
+    #[error("binary fetch [{start}, {end}) exceeds result set with {total_rows} rows", end = start.saturating_add(*count as u64))]
+    InvalidRange {
+        start: u64,
+        count: usize,
+        total_rows: u64,
+    },
 }
 
 pub type CursorResult<T> = Result<T, CursorError>;
@@ -122,6 +129,14 @@ pub struct Cursor {
     buf: MapiBuf,
     replies: ReplyParser,
     reply_size: usize,
+}
+
+/// Metadata needed to fetch a result set through `Xexportbin`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinaryResult {
+    pub result_id: u64,
+    pub total_rows: u64,
+    pub columns: Vec<ResultColumn>,
 }
 
 impl Cursor {
@@ -250,6 +265,43 @@ impl Cursor {
         } else {
             &[]
         }
+    }
+
+    /// Return metadata for the current result set.
+    pub fn binary_result(&mut self) -> CursorResult<BinaryResult> {
+        self.skip_to_result_set()?;
+        let result = self.result_set()?;
+        Ok(BinaryResult {
+            result_id: result.result_id,
+            total_rows: result.total_rows,
+            columns: result.columns.clone(),
+        })
+    }
+
+    /// Fetch a row window using MonetDB's binary result-set protocol.
+    ///
+    /// The returned message is the complete `Xexportbin` payload, including
+    /// the `&6` header, aligned column buffers, table of contents, and trailing
+    /// table-of-contents offset described by `binary-resultset.rst`.
+    pub fn fetch_binary(&mut self, start: u64, count: usize) -> CursorResult<Vec<u8>> {
+        self.skip_to_result_set()?;
+        let result = self.result_set()?;
+        if start > result.total_rows {
+            return Err(CursorError::InvalidRange {
+                start,
+                count,
+                total_rows: result.total_rows,
+            });
+        }
+        let available = result.total_rows - start;
+        let count = count.min(usize::try_from(available).unwrap_or(usize::MAX));
+        let command = format!("Xexportbin {} {start} {count}", result.result_id);
+        let mut response = Vec::new();
+        self.command(&[command.as_bytes()], &mut response)?;
+        if response.first() == Some(&b'!') {
+            ReplyParser::detect_errors(&response)?;
+        }
+        Ok(response)
     }
 
     /// Advance the cursor to the next available row in the result set,

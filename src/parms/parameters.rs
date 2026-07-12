@@ -907,7 +907,7 @@ pub struct Validated<'a> {
 
 impl Validated<'_> {
     #[allow(unused_variables)]
-    fn new(parms: &Parameters) -> ParmResult<Validated> {
+    fn new(parms: &Parameters) -> ParmResult<Validated<'_>> {
         use Parm::*;
         use ParmError::*;
 

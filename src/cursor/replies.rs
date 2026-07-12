@@ -8,7 +8,7 @@
 
 #![allow(dead_code)]
 
-use std::{error, iter, mem, str::FromStr};
+use std::{error, iter::repeat_n, mem, str::FromStr};
 
 use bstr::{BStr, BString, ByteSlice};
 use memchr::memmem;
@@ -443,8 +443,7 @@ impl ReplyParser {
         let ncols = ncols as usize;
         let to_close = (rows_included < rows_total).then_some(result_id);
 
-        let mut columns: Vec<ResultColumn> =
-            iter::repeat(ResultColumn::empty()).take(ncols).collect();
+        let mut columns: Vec<ResultColumn> = repeat_n(ResultColumn::empty(), ncols).collect();
 
         // parse the table_name header
         Self::parse_data_header(&mut buf, "table_name", &mut columns, &|col, s| {

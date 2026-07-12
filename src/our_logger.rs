@@ -61,7 +61,7 @@ mod tests {
     }
 
     impl TestLogger {
-        fn start(&self) -> MutexGuard<bool> {
+        fn start(&self) -> MutexGuard<'_, bool> {
             // the global mutex gets poisoned if an assertion fails while
             // it is held. we don't care.
             let mut guard = match self.global_lock.lock() {

@@ -8,6 +8,7 @@
 
 mod context;
 
+mod test_binary;
 mod test_connecting;
 mod test_resulttypes;
 
