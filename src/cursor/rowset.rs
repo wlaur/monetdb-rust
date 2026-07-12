@@ -17,6 +17,12 @@ pub struct RowSet {
     fields: Vec<Option<(*const u8, usize)>>,
 }
 
+// SAFETY: field pointers always refer into `buf`'s owned `Vec<u8>` allocation.
+// Moving a RowSet, including between threads, moves the Vec handle but not its
+// allocation. All mutation requires `&mut self`, and RowSet is not Sync, so the
+// pointed-to bytes cannot be accessed concurrently while fields are installed.
+unsafe impl Send for RowSet {}
+
 // [ 1,→"one"→]↵
 // [ 42,→"forty-two"→]↵
 // [ -1,→"a\\\"b"→]↵
