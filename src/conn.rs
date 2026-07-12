@@ -159,6 +159,14 @@ impl Connection {
             Ok(sock)
         })
     }
+
+    /// Queue a prepared statement for deallocation without waiting for network I/O.
+    ///
+    /// Returns `false` when another operation currently owns the connection; the
+    /// server will reclaim the statement when the connection closes in that case.
+    pub fn try_deallocate(&self, statement_id: u64) -> bool {
+        self.0.try_queue_deallocate(statement_id)
+    }
 }
 
 /// Protocol capabilities negotiated for a live connection.
@@ -209,6 +217,21 @@ impl Conn {
         for result_id in result_ids {
             guard.delayed.add_xcommand("close", result_id);
         }
+    }
+
+    fn try_queue_deallocate(&self, statement_id: u64) -> bool {
+        let mut guard = match self.locked.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return false,
+        };
+        if guard.sock.is_none() {
+            return false;
+        }
+        guard
+            .delayed
+            .add("deallocate", format_args!("sDEALLOCATE {statement_id}\n;"));
+        true
     }
 }
 
