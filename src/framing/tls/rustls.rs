@@ -14,19 +14,19 @@ use std::{
 };
 
 use rustls::{
-    client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
-    crypto::{verify_tls12_signature, verify_tls13_signature, WebPkiSupportedAlgorithms},
-    pki_types::{CertificateDer, ServerName, UnixTime},
     CertificateError, ClientConfig, ClientConnection, DigitallySignedStruct, Error, RootCertStore,
     SignatureScheme, StreamOwned,
+    client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+    crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature},
+    pki_types::{CertificateDer, ServerName, UnixTime},
 };
 use rustls_platform_verifier::BuilderVerifierExt;
 use sha2::{Digest, Sha256};
 
 use crate::{
     framing::{
-        connecting::{ConnectError, ConnectResult},
         ServerSock, ServerSockTrait,
+        connecting::{ConnectError, ConnectResult},
     },
     parms::{TlsVerify, Validated},
 };

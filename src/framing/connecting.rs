@@ -26,11 +26,11 @@ use std::os::unix::net::UnixStream;
 use gethostname;
 
 use crate::{
+    PUBLIC_NAME,
     cursor::delayed::{DelayedCommands, ExpectedResponse},
     framing::{reading::MapiReader, writing::MapiBuf},
     parms::{Parameters, ParmError, Validated},
     util::{hash_algorithms, ioerror::IoError},
-    PUBLIC_NAME,
 };
 
 use super::{ServerSock, ServerState};
@@ -217,10 +217,10 @@ pub fn establish_connection(
 ) -> ConnectResult<(ServerSock, ServerState, DelayedCommands)> {
     'redirect: for _ in 0..10 {
         let validated = parms.validate()?;
-        if log_enabled!(log::Level::Debug) {
-            if let Ok(url) = parms.url_without_credentials() {
-                debug!("connecting to {url}");
-            }
+        if log_enabled!(log::Level::Debug)
+            && let Ok(url) = parms.url_without_credentials()
+        {
+            debug!("connecting to {url}");
         }
         let mut sock = connect_socket(&validated)?;
         'restart: loop {

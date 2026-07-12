@@ -32,7 +32,7 @@ pub mod temporal_time;
 mod tests;
 
 use std::{
-    any::{type_name, Any},
+    any::{Any, type_name},
     fmt,
     str::FromStr,
 };
@@ -40,8 +40,8 @@ use std::{
 use raw_decimal::RawDecimal;
 
 use crate::{
-    cursor::replies::{BadReply, ResultSet},
     CursorError, CursorResult,
+    cursor::replies::{BadReply, ResultSet},
 };
 
 /// A type that can be extracted from a result set.

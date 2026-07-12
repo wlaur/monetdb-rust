@@ -15,7 +15,7 @@ use memchr::memmem;
 
 use crate::monettypes::MonetType;
 
-use super::{rowset::RowSet, CursorError, CursorResult};
+use super::{CursorError, CursorResult, rowset::RowSet};
 
 #[derive(Debug, PartialEq, Eq, Clone, thiserror::Error)]
 pub enum BadReply {
@@ -561,7 +561,8 @@ impl ReplyParser {
                     "too many columns in data header".into(),
                 ));
             };
-            if let Err(e) = f(col, part) {
+            let result = f(col, part);
+            if let Err(e) = result {
                 return Err(BadReply::InvalidHeader(format!("col {i}: {e}")));
             }
         }

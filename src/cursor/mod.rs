@@ -22,10 +22,10 @@ use replies::{BadReply, ReplyBuf, ReplyParser, ResultColumn, ResultSet};
 use rowset::RowSet;
 
 use crate::conn::Conn;
-use crate::convert::{from_utf8, FromMonet};
+use crate::convert::{FromMonet, from_utf8};
+use crate::framing::FramingError;
 use crate::framing::reading::MapiReader;
 use crate::framing::writing::MapiBuf;
-use crate::framing::FramingError;
 use crate::framing::{ServerSock, ServerState};
 use crate::util::ioerror::IoError;
 

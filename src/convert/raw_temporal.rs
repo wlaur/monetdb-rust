@@ -12,9 +12,9 @@ use atoi::FromRadix10Checked;
 use bstr::BStr;
 use num::Zero;
 
-use crate::{cursor::replies::ResultSet, CursorResult};
+use crate::{CursorResult, cursor::replies::ResultSet};
 
-use super::{conversion_error, raw_decimal::RawDecimal, FromMonet};
+use super::{FromMonet, conversion_error, raw_decimal::RawDecimal};
 
 /// Representation of a DATE value from MonetDB
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -107,7 +107,7 @@ impl RawTime {
                     return Err(conversion_error::<Self>(format!(
                         "server sent invalid TIME: {}",
                         e
-                    )))
+                    )));
                 }
             }
         } else {
@@ -275,7 +275,7 @@ impl RawTz {
                 return Err(conversion_error::<Self>(format!(
                     "invalid timezone: {:?}",
                     BStr::new(field)
-                )))
+                )));
             }
         };
         let hours = take_unsigned::<u8, Self>(hr_ms)?;

@@ -6,9 +6,9 @@
 //
 // Copyright 2024 MonetDB Foundation
 
-use crate::{get_server, AResult};
+use crate::{AResult, get_server};
 use claims::assert_some;
-use monetdb::{parms::Parm, Connection, CursorResult, Parameters};
+use monetdb::{Connection, CursorResult, Parameters, parms::Parm};
 use std::{io, net::TcpListener};
 
 #[test]

@@ -196,14 +196,14 @@ fn parse_legacy_url(parms: &mut Parameters, url: &str) -> ParmResult<()> {
         // first path component is database name
 
         let mut database = "";
-        if let Some(mut path_segments) = parsed.path_segments() {
-            if let Some(db) = path_segments.next() {
-                database = db;
-                if let Some(unexpected) = path_segments.next() {
-                    return Err(ParmError::InvalidUrl(format!(
-                        "invalid path component {unexpected:?}"
-                    )));
-                }
+        if let Some(mut path_segments) = parsed.path_segments()
+            && let Some(db) = path_segments.next()
+        {
+            database = db;
+            if let Some(unexpected) = path_segments.next() {
+                return Err(ParmError::InvalidUrl(format!(
+                    "invalid path component {unexpected:?}"
+                )));
             }
         };
         parms.set(Parm::Database, database)?;
@@ -240,8 +240,8 @@ pub fn url_from_parms(
     parms: &Parameters,
     selection: impl IntoIterator<Item = Parm>,
 ) -> ParmResult<String> {
-    use fmt::Write;
     use Parm::*;
+    use fmt::Write;
     let mut url = String::with_capacity(80);
 
     let scheme = if parms.get_bool(Tls)? {

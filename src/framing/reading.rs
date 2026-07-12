@@ -8,7 +8,7 @@
 
 use std::io::{self, ErrorKind, Read};
 
-use super::{blockstate::BlockState, BLOCKSIZE};
+use super::{BLOCKSIZE, blockstate::BlockState};
 
 pub struct MapiReader<R> {
     inner: R,
@@ -30,7 +30,7 @@ impl<R: Read> MapiReader<R> {
         loop {
             match self.state {
                 BlockState::Body { remaining, last } => {
-                    return self.read_body(remaining, last, buf)
+                    return self.read_body(remaining, last, buf);
                 }
 
                 BlockState::Start => self.read_header(&mut [0, 0])?,

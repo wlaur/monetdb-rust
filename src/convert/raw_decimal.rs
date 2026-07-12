@@ -52,14 +52,13 @@ impl<T> RawDecimal<T> {
         let mut acc = Self::small_constant(0);
         while let [d, rest @ ..] = digits {
             match d {
-                b'0'..=b'9' => {
-                    if let Some(new) = Self::multiply_accumulate(acc, d - b'0') {
+                b'0'..=b'9' => match Self::multiply_accumulate(acc, d - b'0') {
+                    Some(new) => {
                         acc = new;
                         scale += 1;
-                    } else {
-                        return Err(InvalidDecimal::OutOfRange);
                     }
-                }
+                    None => return Err(InvalidDecimal::OutOfRange),
+                },
                 b'.' => {
                     scale = 0;
                     saw_period = true;
@@ -95,10 +94,9 @@ impl<T> RawDecimal<T> {
     where
         T: TryFrom<u8>,
     {
-        if let Ok(n) = T::try_from(num) {
-            n
-        } else {
-            panic!("invalid small constant {num}");
+        match T::try_from(num) {
+            Ok(n) => n,
+            Err(_) => panic!("invalid small constant {num}"),
         }
     }
 }

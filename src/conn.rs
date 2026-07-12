@@ -9,17 +9,17 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{self, AtomicBool},
         Arc, Mutex, TryLockError,
+        atomic::{self, AtomicBool},
     },
 };
 
 use crate::{
-    cursor::{delayed::DelayedCommands, Cursor, CursorError, CursorResult},
+    cursor::{Cursor, CursorError, CursorResult, delayed::DelayedCommands},
     framing::{
-        connecting::{establish_connection, ConnectResult, Endian},
-        reading::MapiReader,
         ServerSock, ServerState,
+        connecting::{ConnectResult, Endian, establish_connection},
+        reading::MapiReader,
     },
     parms::Parameters,
 };
@@ -199,7 +199,8 @@ impl Conn {
             return Err(CursorError::Closed);
         };
         let Locked { state, delayed, .. } = &mut *guard;
-        match f(state, delayed, sock) {
+        let result = f(state, delayed, sock);
+        match result {
             Ok(sock) => {
                 guard.sock = Some(sock);
                 Ok(())
