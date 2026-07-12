@@ -108,6 +108,9 @@ impl RowSet {
         let field = *self.fields.get(idx)?;
         // NULL -> None
         let field = field?;
+        // SAFETY: `advance` records only pointers and lengths into `buf`'s stable
+        // allocation. Access requires borrowing this RowSet, and no method can
+        // mutate or replace the allocation through that shared borrow.
         let slice = unsafe { std::slice::from_raw_parts(field.0, field.1) };
         Some(slice)
     }

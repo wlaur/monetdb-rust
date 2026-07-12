@@ -160,7 +160,7 @@ fn connect_tcp_socket(parms: &Validated) -> io::Result<ServerSock> {
 fn connect_socket(parms: &Validated) -> ConnectResult<ServerSock> {
     let mut err: Option<ConnectError> = None;
 
-    if parms.connect_unix.is_empty() {
+    if !parms.connect_unix.is_empty() {
         match connect_unix_socket(parms) {
             Ok(s) => return Ok(s),
             Err(e) => err = Some(e),
@@ -172,7 +172,9 @@ fn connect_socket(parms: &Validated) -> ConnectResult<ServerSock> {
             Err(e) => err = Some(e.into()),
         }
     }
-    Err(err.unwrap())
+    Err(err.unwrap_or_else(|| {
+        io::Error::new(ErrorKind::InvalidInput, "no connection address configured").into()
+    }))
 }
 
 fn wrap_tls(parms: &Validated, mut sock: ServerSock) -> ConnectResult<ServerSock> {
@@ -624,5 +626,21 @@ impl fmt::Display for SqlForm<'_> {
             prefix = "";
         }
         Ok(())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nonexistent_unix_socket_returns_an_error() {
+        let mut parameters = Parameters::default();
+        parameters
+            .set_sock("/definitely/not/a/monetdb/socket")
+            .unwrap();
+        let validated = parameters.validate().unwrap();
+
+        assert!(connect_socket(&validated).is_err());
     }
 }

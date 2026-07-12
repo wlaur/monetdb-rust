@@ -32,6 +32,8 @@ fn test_binary_result_window_and_server_info() -> Result<()> {
     )?;
     let result = cursor.binary_result()?;
     assert_eq!(result.total_rows, 3);
+    assert_eq!(result.rows_included, 1);
+    assert!(result.is_server_resident());
     assert_eq!(result.columns.len(), 2);
     assert_eq!(result.columns[0].name(), "i");
     assert_eq!(result.columns[0].table_name(), ".t");
@@ -46,6 +48,33 @@ fn test_binary_result_window_and_server_info() -> Result<()> {
 
     let error = cursor.fetch_binary(4, 1).unwrap_err();
     assert!(error.to_string().contains("exceeds result set"));
+    Ok(())
+}
+
+#[test]
+fn test_inline_result_reports_not_resident() -> Result<()> {
+    let mut parameters = get_server().parms();
+    parameters.set_replysize(1)?;
+    let connection = monetdb::Connection::new(parameters)?;
+    if connection.server_info()?.binary_level < 1 {
+        return Ok(());
+    }
+
+    let mut cursor = connection.cursor();
+    cursor.execute("SELECT 42")?;
+    let result = cursor.binary_result()?;
+    assert_eq!(result.total_rows, 1);
+    assert_eq!(result.rows_included, 1);
+    assert!(!result.is_server_resident());
+    assert!(matches!(
+        cursor.fetch_binary(0, 1),
+        Err(monetdb::CursorError::ResultNotResident {
+            rows_included: 1,
+            total_rows: 1
+        })
+    ));
+    assert!(cursor.next_row()?);
+    assert_eq!(cursor.get_i32(0)?, Some(42));
     Ok(())
 }
 
@@ -134,5 +163,34 @@ fn test_lazy_binary_uploads() -> Result<()> {
     assert_eq!(cursor.get_str(1)?, Some("two"));
     assert!(!cursor.next_row()?);
     cursor.execute("DROP TABLE adbc_lazy_binary_upload")?;
+    Ok(())
+}
+
+#[test]
+fn test_refused_binary_upload_preserves_connection() -> Result<()> {
+    let mut connection = get_server().connect()?;
+    if connection.metadata()?.version() < (11, 41, 0) {
+        return Ok(());
+    }
+    let mut cursor = connection.cursor();
+    cursor.execute("DROP TABLE IF EXISTS adbc_refused_binary_upload")?;
+    cursor.execute("CREATE TABLE adbc_refused_binary_upload(i INT)")?;
+
+    let error = cursor
+        .execute_with_binary_uploads_lazy(
+            "COPY LITTLE ENDIAN BINARY INTO adbc_refused_binary_upload FROM 'c0' ON CLIENT",
+            |_| {
+                Err(monetdb::CursorError::FileTransfer(
+                    "intentional refusal".into(),
+                ))
+            },
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("intentional refusal"));
+
+    cursor.execute("SELECT COUNT(*) FROM adbc_refused_binary_upload")?;
+    assert!(cursor.next_row()?);
+    assert_eq!(cursor.get_i64(0)?, Some(0));
+    cursor.execute("DROP TABLE adbc_refused_binary_upload")?;
     Ok(())
 }

@@ -103,6 +103,10 @@ impl MapiBuf {
         // header yet
         self.buffer.truncate(2);
         self.block_left = BLOCKSIZE;
+        // SAFETY: `raw_base` points into `self.buffer`. Truncating a Vec does not
+        // move or deallocate its allocation, and `raw_len` is the length recorded
+        // before truncation. The returned borrow is tied to `&mut self`, preventing
+        // the buffer from being mutated while the slice is live.
         unsafe { std::slice::from_raw_parts(raw_base, raw_len) }
     }
 

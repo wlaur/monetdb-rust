@@ -130,7 +130,7 @@ impl Connection {
             });
             Ok(sock)
         })?;
-        Ok(info.expect("connection state is available while locked"))
+        info.ok_or(CursorError::Closed)
     }
 
     /// Enable or disable server-side autocommit for this connection.
@@ -159,6 +159,14 @@ impl Connection {
             Ok(sock)
         })
     }
+
+    /// Queue a prepared statement for deallocation without waiting for network I/O.
+    ///
+    /// Returns `false` when another operation currently owns the connection; the
+    /// server will reclaim the statement when the connection closes in that case.
+    pub fn try_deallocate(&self, statement_id: u64) -> bool {
+        self.0.try_queue_deallocate(statement_id)
+    }
 }
 
 /// Protocol capabilities negotiated for a live connection.
@@ -186,7 +194,7 @@ impl Conn {
             ServerSock,
         ) -> CursorResult<ServerSock>,
     {
-        let mut guard = self.locked.lock().unwrap();
+        let mut guard = self.locked.lock().map_err(|_| CursorError::Poisoned)?;
         let Some(sock) = guard.sock.take() else {
             return Err(CursorError::Closed);
         };
@@ -198,6 +206,32 @@ impl Conn {
             }
             Err(e) => Err(e),
         }
+    }
+
+    pub(crate) fn try_queue_closes(&self, result_ids: &[u64]) {
+        let mut guard = match self.locked.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return,
+        };
+        for result_id in result_ids {
+            guard.delayed.add_xcommand("close", result_id);
+        }
+    }
+
+    fn try_queue_deallocate(&self, statement_id: u64) -> bool {
+        let mut guard = match self.locked.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return false,
+        };
+        if guard.sock.is_none() {
+            return false;
+        }
+        guard
+            .delayed
+            .add("deallocate", format_args!("sDEALLOCATE {statement_id}\n;"));
+        true
     }
 }
 
@@ -219,7 +253,7 @@ impl ServerMetadata {
         while cursor.next_row()? {
             let name = cursor
                 .get_str(0)?
-                .expect("sys.environment.name should not be null");
+                .ok_or(CursorError::Metadata("sys.environment.name is null"))?;
             let value = cursor.get_str(1)?.unwrap_or("");
             environment.insert(name.to_string(), value.to_string());
         }

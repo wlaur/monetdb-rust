@@ -22,8 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # MSRV is currently 1.80.
-        rustversion: [ stable, nightly, beta, 1.80.1 ]
+        rustversion: [stable, nightly, beta]
     steps:
       - uses: actions/checkout@v4
 

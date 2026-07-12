@@ -73,6 +73,14 @@ pub enum CursorError {
     /// Binary export was requested for a PREPARE metadata result.
     #[error("prepared statement metadata cannot be fetched with Xexportbin")]
     PreparedResult,
+    /// Binary export was requested after MonetDB returned the complete result inline.
+    #[error(
+        "result is not server-resident ({rows_included} of {total_rows} rows were returned inline)"
+    )]
+    ResultNotResident { rows_included: u64, total_rows: u64 },
+    /// Shared connection state was poisoned by an earlier panic.
+    #[error("connection state is poisoned")]
+    Poisoned,
 }
 
 pub type CursorResult<T> = Result<T, CursorError>;
@@ -143,7 +151,16 @@ pub struct Cursor {
 pub struct BinaryResult {
     pub result_id: u64,
     pub total_rows: u64,
+    /// Rows already present in the initial text-protocol response.
+    pub rows_included: u64,
     pub columns: Vec<ResultColumn>,
+}
+
+impl BinaryResult {
+    /// Whether MonetDB retained this result for a subsequent `Xexportbin` request.
+    pub fn is_server_resident(&self) -> bool {
+        self.rows_included < self.total_rows
+    }
 }
 
 impl Cursor {
@@ -352,6 +369,7 @@ impl Cursor {
         Ok(BinaryResult {
             result_id: result.result_id,
             total_rows: result.total_rows,
+            rows_included: result.rows_included,
             columns: result.columns.clone(),
         })
     }
@@ -366,6 +384,12 @@ impl Cursor {
         let result = self.result_set()?;
         if result.prepared {
             return Err(CursorError::PreparedResult);
+        }
+        if result.total_rows > 0 && result.rows_included == result.total_rows {
+            return Err(CursorError::ResultNotResident {
+                rows_included: result.rows_included,
+                total_rows: result.total_rows,
+            });
         }
         if start > result.total_rows {
             return Err(CursorError::InvalidRange {
@@ -552,6 +576,23 @@ impl Cursor {
 
 impl Drop for Cursor {
     fn drop(&mut self) {
-        let _ = self.do_close();
+        let mut result_ids = Vec::new();
+        loop {
+            let replies = mem::take(&mut self.replies);
+            match replies.into_next_reply() {
+                Ok((next, to_close)) => {
+                    if let Some(result_id) = to_close {
+                        result_ids.push(result_id);
+                    }
+                    let exhausted = matches!(next, ReplyParser::Exhausted(_));
+                    self.replies = next;
+                    if exhausted {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        self.conn.try_queue_closes(&result_ids);
     }
 }

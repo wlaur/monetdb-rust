@@ -34,6 +34,7 @@ fn extract_from_fake_resultset<T: FromMonet + fmt::Debug>(
         prepared: false,
         next_row: 0,
         total_rows: 1,
+        rows_included: 1,
         columns,
         row_set,
         stashed: None,
