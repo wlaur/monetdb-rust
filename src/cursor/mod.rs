@@ -70,6 +70,9 @@ pub enum CursorError {
     /// The server requested an invalid or unavailable client-side file.
     #[error("file transfer failed: {0}")]
     FileTransfer(String),
+    /// Binary export was requested for a PREPARE metadata result.
+    #[error("prepared statement metadata cannot be fetched with Xexportbin")]
+    PreparedResult,
 }
 
 pub type CursorResult<T> = Result<T, CursorError>;
@@ -293,10 +296,25 @@ impl Cursor {
         }
     }
 
+    /// Return the server-side statement id when the current result is from PREPARE.
+    pub fn prepared_statement_id(&self) -> Option<u64> {
+        match &self.replies {
+            ReplyParser::Data(ResultSet {
+                result_id,
+                prepared: true,
+                ..
+            }) => Some(*result_id),
+            _ => None,
+        }
+    }
+
     /// Return metadata for the current result set.
     pub fn binary_result(&mut self) -> CursorResult<BinaryResult> {
         self.skip_to_result_set()?;
         let result = self.result_set()?;
+        if result.prepared {
+            return Err(CursorError::PreparedResult);
+        }
         Ok(BinaryResult {
             result_id: result.result_id,
             total_rows: result.total_rows,
@@ -312,6 +330,9 @@ impl Cursor {
     pub fn fetch_binary(&mut self, start: u64, count: usize) -> CursorResult<Vec<u8>> {
         self.skip_to_result_set()?;
         let result = self.result_set()?;
+        if result.prepared {
+            return Err(CursorError::PreparedResult);
+        }
         if start > result.total_rows {
             return Err(CursorError::InvalidRange {
                 start,

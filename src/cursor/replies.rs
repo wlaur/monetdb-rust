@@ -261,6 +261,7 @@ pub enum ReplyParser {
 #[derive(Debug)]
 pub struct ResultSet {
     pub result_id: u64,
+    pub prepared: bool,
     pub next_row: u64,
     pub total_rows: u64,
     pub columns: Vec<ResultColumn>,
@@ -363,10 +364,11 @@ impl ReplyParser {
                 vec.clear();
                 Ok(ReplyParser::Exhausted(vec))
             }
-            [b'&', b'1', ..] => Self::parse_data(buf),
+            [b'&', b'1', ..] => Self::parse_data(buf, false),
             [b'&', b'2', ..] => Self::parse_successful_update(buf),
             [b'&', b'3', ..] => Self::parse_successful_other(buf),
             [b'&', b'4', ..] => Self::parse_autocommit_status(buf),
+            [b'&', b'5', ..] => Self::parse_data(buf, true),
             [b'!', ..] => Self::parse_error(buf),
             _ => {
                 let line = ahead.as_bstr().lines().next().unwrap();
@@ -433,7 +435,7 @@ impl ReplyParser {
         Ok(ReplyParser::Error(buf))
     }
 
-    fn parse_data(mut buf: ReplyBuf) -> RResult<ReplyParser> {
+    fn parse_data(mut buf: ReplyBuf, prepared: bool) -> RResult<ReplyParser> {
         let mut fields = [0; 4];
         Self::parse_header(&mut buf, &mut fields)?;
         let [result_id, rows_total, ncols, rows_included] = fields;
@@ -441,7 +443,7 @@ impl ReplyParser {
             return Err(BadReply::TooManyColumns(ncols));
         }
         let ncols = ncols as usize;
-        let to_close = (rows_included < rows_total).then_some(result_id);
+        let to_close = (!prepared && rows_included < rows_total).then_some(result_id);
 
         let mut columns: Vec<ResultColumn> = repeat_n(ResultColumn::empty(), ncols).collect();
 
@@ -489,6 +491,7 @@ impl ReplyParser {
         let row_set = RowSet::new(buf, columns.len());
         Ok(ReplyParser::Data(ResultSet {
             result_id,
+            prepared,
             next_row: 0,
             total_rows: rows_total,
             columns,
@@ -585,5 +588,38 @@ pub fn from_utf8<'a>(context: &'static str, bytes: &'a [u8]) -> RResult<&'a str>
     match std::str::from_utf8(bytes) {
         Ok(s) => Ok(s),
         Err(_) => Err(BadReply::Unicode(context)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReplyParser, ResultSet};
+
+    #[test]
+    fn parses_prepare_result_header() {
+        let response = concat!(
+            "&5 17 1 1 1\n",
+            "% .prepare # table_name\n",
+            "% type # name\n",
+            "% varchar # type\n",
+            "% 7 # length\n",
+            "% 0 0 # typesizes\n",
+            "[ \"hugeint\"\t]\n"
+        );
+        let parser = ReplyParser::new(response.as_bytes().to_vec()).unwrap();
+        let ReplyParser::Data(ResultSet {
+            result_id,
+            prepared,
+            total_rows,
+            to_close,
+            ..
+        }) = parser
+        else {
+            panic!("expected prepare result set");
+        };
+        assert_eq!(result_id, 17);
+        assert!(prepared);
+        assert_eq!(total_rows, 1);
+        assert_eq!(to_close, None);
     }
 }
