@@ -82,6 +82,12 @@ pub enum MonetType {
     Json,
     /// A UUID.
     Uuid,
+    /// A geometry value.
+    Geometry,
+    /// A geometry value with an additional coordinate dimension.
+    GeometryA,
+    /// An XML document or fragment.
+    Xml,
 }
 
 impl fmt::Display for MonetType {
@@ -112,6 +118,9 @@ impl fmt::Display for MonetType {
             Inet => f.write_str("INET"),
             Json => f.write_str("JSON"),
             Uuid => f.write_str("UUID"),
+            Geometry => f.write_str("GEOMETRY"),
+            GeometryA => f.write_str("GEOMETRYA"),
+            Xml => f.write_str("XML"),
         }
     }
 }
@@ -147,8 +156,26 @@ impl MonetType {
             "inet" => Inet,
             "json" => Json,
             "uuid" => Uuid,
+            "geometry" => Geometry,
+            "geometrya" => GeometryA,
+            "xml" => Xml,
             _ => return None,
         };
         Some(typ)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MonetType;
+
+    #[test]
+    fn recognizes_non_binary_sql_types() {
+        assert_eq!(MonetType::prototype("geometry"), Some(MonetType::Geometry));
+        assert_eq!(
+            MonetType::prototype("geometrya"),
+            Some(MonetType::GeometryA)
+        );
+        assert_eq!(MonetType::prototype("xml"), Some(MonetType::Xml));
     }
 }
