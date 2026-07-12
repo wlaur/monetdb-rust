@@ -153,7 +153,7 @@ impl MonetType {
             "timestamptz" => TimestampTz,
             "blob" => Blob,
             "url" => Url,
-            "inet" => Inet,
+            "inet" | "inet4" | "inet6" => Inet,
             "json" => Json,
             "uuid" => Uuid,
             "geometry" => Geometry,
@@ -177,5 +177,7 @@ mod tests {
             Some(MonetType::GeometryA)
         );
         assert_eq!(MonetType::prototype("xml"), Some(MonetType::Xml));
+        assert_eq!(MonetType::prototype("inet4"), Some(MonetType::Inet));
+        assert_eq!(MonetType::prototype("inet6"), Some(MonetType::Inet));
     }
 }
