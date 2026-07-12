@@ -447,13 +447,12 @@ impl ReplyParser {
 
         // parse the table_name header
         Self::parse_data_header(&mut buf, "table_name", &mut columns, &|col, s| {
-            col.name.push_str(s);
+            col.table_name.push_str(s);
             Ok(())
         })?;
 
         // parse the name header
         Self::parse_data_header(&mut buf, "name", &mut columns, &|col, s| {
-            col.name.push('.');
             col.name.push_str(s);
             Ok(())
         })?;
@@ -545,6 +544,7 @@ impl ReplyParser {
 /// Holds information about a column of a result set.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct ResultColumn {
+    pub(crate) table_name: String,
     pub(crate) name: String,
     pub(crate) typ: MonetType,
 }
@@ -556,6 +556,7 @@ impl ResultColumn {
 
     pub(crate) fn new(name: &str, typ: MonetType) -> Self {
         ResultColumn {
+            table_name: String::new(),
             name: name.into(),
             typ,
         }
@@ -564,6 +565,11 @@ impl ResultColumn {
     /// Return the name of the column.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Return the source table name, or an empty string for an expression.
+    pub fn table_name(&self) -> &str {
+        &self.table_name
     }
 
     /// Return the type of the column.

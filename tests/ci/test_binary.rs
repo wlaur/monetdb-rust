@@ -29,6 +29,8 @@ fn test_binary_result_window_and_server_info() -> Result<()> {
     let result = cursor.binary_result()?;
     assert_eq!(result.total_rows, 3);
     assert_eq!(result.columns.len(), 2);
+    assert_eq!(result.columns[0].name(), "i");
+    assert_eq!(result.columns[0].table_name(), ".t");
 
     let frame = cursor.fetch_binary(1, 2)?;
     assert!(
