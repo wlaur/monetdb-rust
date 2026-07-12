@@ -461,7 +461,7 @@ impl ReplyParser {
 
         // parse the type header
         Self::parse_data_header(&mut buf, "type", &mut columns, &|col, s| {
-            let Some(typ) = MonetType::prototype(s) else {
+            let Some(typ) = MonetType::from_mapi_code(s) else {
                 return Err(format!("unknown column type: {s}").into());
             };
             col.typ = typ;

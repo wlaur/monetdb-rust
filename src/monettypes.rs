@@ -129,7 +129,7 @@ impl MonetType {
     /// Used while parsing result sets. Based on the name
     /// create a MonetType instance with parameters
     /// set to a dummy value.
-    pub(crate) fn prototype(code: &str) -> Option<Self> {
+    pub fn from_mapi_code(code: &str) -> Option<Self> {
         use MonetType::*;
         let typ = match code {
             "boolean" => Bool,
@@ -171,13 +171,16 @@ mod tests {
 
     #[test]
     fn recognizes_non_binary_sql_types() {
-        assert_eq!(MonetType::prototype("geometry"), Some(MonetType::Geometry));
         assert_eq!(
-            MonetType::prototype("geometrya"),
+            MonetType::from_mapi_code("geometry"),
+            Some(MonetType::Geometry)
+        );
+        assert_eq!(
+            MonetType::from_mapi_code("geometrya"),
             Some(MonetType::GeometryA)
         );
-        assert_eq!(MonetType::prototype("xml"), Some(MonetType::Xml));
-        assert_eq!(MonetType::prototype("inet4"), Some(MonetType::Inet));
-        assert_eq!(MonetType::prototype("inet6"), Some(MonetType::Inet));
+        assert_eq!(MonetType::from_mapi_code("xml"), Some(MonetType::Xml));
+        assert_eq!(MonetType::from_mapi_code("inet4"), Some(MonetType::Inet));
+        assert_eq!(MonetType::from_mapi_code("inet6"), Some(MonetType::Inet));
     }
 }
