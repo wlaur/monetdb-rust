@@ -17,8 +17,8 @@
 use std::{fmt, io};
 
 use super::{
-    blockstate::{BlockState, Header},
     BLOCKSIZE,
+    blockstate::{BlockState, Header},
 };
 
 pub struct MapiBuf {

@@ -10,7 +10,7 @@ use std::{borrow::Borrow, ops::Range};
 
 use crate::framing::FramingError;
 
-use super::{FramingResult, BLOCKSIZE};
+use super::{BLOCKSIZE, FramingResult};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Header([u8; 2]);

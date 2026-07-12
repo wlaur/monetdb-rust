@@ -8,9 +8,9 @@
 
 use std::{borrow::Cow, io::Write};
 
-use crate::framing::{reading::MapiReader, ServerSock, BLOCKSIZE};
+use crate::framing::{BLOCKSIZE, ServerSock, reading::MapiReader};
 
-use super::{delayed::DelayedCommands, Cursor, CursorError, CursorResult};
+use super::{Cursor, CursorError, CursorResult, delayed::DelayedCommands};
 
 const FILE_TRANSFER: &[u8] = b"\x01\x03\n";
 const MORE: &[u8] = b"\x01\x02\n";

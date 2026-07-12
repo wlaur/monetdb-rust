@@ -238,11 +238,7 @@ pub fn parse_bool(s: &str) -> Option<bool> {
 }
 
 pub fn render_bool(b: bool) -> &'static str {
-    if b {
-        "on"
-    } else {
-        "off"
-    }
+    if b { "on" } else { "off" }
 }
 
 /// Type [`Value`] can hold the possible values for these parameters, glossing over

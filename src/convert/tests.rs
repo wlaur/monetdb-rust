@@ -10,8 +10,8 @@ use claims::{assert_err, assert_matches};
 use raw_temporal::{RawDate, RawTime, RawTimeTz, RawTimestamp, RawTz};
 
 use crate::{
-    cursor::{replies::ReplyBuf, rowset::RowSet},
     MonetType, ResultColumn,
+    cursor::{replies::ReplyBuf, rowset::RowSet},
 };
 
 use super::*;

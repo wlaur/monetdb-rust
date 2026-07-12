@@ -149,7 +149,9 @@ impl Verifier {
         let (name, delta) = self.describe(used);
         let unused_len = unused.len();
         let show_unused = Bin::cut(unused, 0, 0, 5);
-        let msg = format!("only {used} ('{name}' + {delta}) of {all} bytes of reference data were used, {unused_len} remain: {show_unused}");
+        let msg = format!(
+            "only {used} ('{name}' + {delta}) of {all} bytes of reference data were used, {unused_len} remain: {show_unused}"
+        );
         Err(msg)
     }
 

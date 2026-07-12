@@ -33,7 +33,7 @@ mod urltests;
 
 use std::{borrow::Cow, fmt, str::FromStr};
 
-pub use parameters::{parse_bool, Parameters, Parm, TlsVerify, Validated, Value, PARM_TABLE_SIZE};
+pub use parameters::{PARM_TABLE_SIZE, Parameters, Parm, TlsVerify, Validated, Value, parse_bool};
 
 /// An error that occurs while dealing with [`Parameters`].
 #[derive(Debug, PartialEq, Eq, Clone, thiserror::Error)]

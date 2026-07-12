@@ -10,18 +10,18 @@
 
 use anyhow::Result as AResult;
 use std::{
-    any::{type_name, type_name_of_val, Any},
+    any::{Any, type_name, type_name_of_val},
     fmt::{self, Debug},
     str::FromStr,
 };
 
 use monetdb::{
+    Connection, Cursor, CursorResult, Parameters,
     convert::{
+        FromMonet,
         raw_decimal::RawDecimal,
         raw_temporal::{RawDate, RawTime, RawTimeTz, RawTimestamp, RawTimestampTz},
-        FromMonet,
     },
-    Connection, Cursor, CursorResult, Parameters,
 };
 
 use crate::context::{get_server, with_shared_cursor};

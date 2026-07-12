@@ -20,7 +20,7 @@ pub mod parms;
 mod util;
 
 pub use conn::{Connection, ServerInfo};
-pub use cursor::{replies::ResultColumn, BinaryResult, Cursor, CursorError, CursorResult};
+pub use cursor::{BinaryResult, Cursor, CursorError, CursorResult, replies::ResultColumn};
 pub use framing::connecting::{ConnectError, ConnectResult, Endian};
 pub use monettypes::MonetType;
 pub use parms::Parameters;

@@ -11,7 +11,7 @@
 use core::fmt;
 use std::{borrow::Cow, io::Write};
 
-use crate::framing::{reading::MapiReader, writing::MapiBuf, ServerSock};
+use crate::framing::{ServerSock, reading::MapiReader, writing::MapiBuf};
 
 use super::CursorResult;
 

@@ -6,9 +6,9 @@
 //
 // Copyright 2024 MonetDB Foundation
 
-use anyhow::{bail, Context, Result as AResult};
+use anyhow::{Context, Result as AResult, bail};
 
-use monetdb::{parms::Parm, ConnectResult, Connection, Cursor, Parameters};
+use monetdb::{ConnectResult, Connection, Cursor, Parameters, parms::Parm};
 use std::{
     env::{self, VarError},
     mem,

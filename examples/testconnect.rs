@@ -9,10 +9,10 @@
 use std::env;
 use std::fmt::Write;
 
-use anyhow::{bail, Result as AResult};
+use anyhow::{Result as AResult, bail};
 use log::info;
 
-use monetdb::{parms::Parameters, Connection, Cursor};
+use monetdb::{Connection, Cursor, parms::Parameters};
 
 const DEFAULT_QUERY: &str = r##"
 DROP TABLE IF EXISTS foo;
