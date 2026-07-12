@@ -26,6 +26,7 @@ impl Cursor {
     where
         F: FnMut(&str) -> CursorResult<Cow<'a, [u8]>>,
     {
+        let mut refused = None;
         self.conn.run_locked(
             |_state,
              delayed: &mut DelayedCommands,
@@ -39,23 +40,45 @@ impl Cursor {
                     let Some(request) = take_file_request(response)? else {
                         return Ok(sock);
                     };
-                    let Some(filename) = request.strip_prefix("rb ") else {
-                        return Err(CursorError::FileTransfer(format!(
-                            "unsupported server request {request:?}"
-                        )));
+                    let filename = match request.strip_prefix("rb ") {
+                        Some(filename) => filename,
+                        None => {
+                            let error = CursorError::FileTransfer(format!(
+                                "unsupported server request {request:?}"
+                            ));
+                            refuse_upload(&mut sock, &error)?;
+                            refused = Some(error);
+                            continue;
+                        }
                     };
-                    let data = upload(filename)?;
+                    let data = match upload(filename) {
+                        Ok(data) => data,
+                        Err(error) => {
+                            refuse_upload(&mut sock, &error)?;
+                            refused = Some(error);
+                            continue;
+                        }
+                    };
                     sock = send_upload(sock, &data)?;
                 }
             },
-        )
+        )?;
+        if let Some(error) = refused {
+            Err(error)
+        } else {
+            Ok(())
+        }
     }
 }
 
 fn take_file_request(response: &mut Vec<u8>) -> CursorResult<Option<String>> {
     let Some(marker) = response
         .windows(FILE_TRANSFER.len())
-        .rposition(|window| window == FILE_TRANSFER)
+        .enumerate()
+        .rfind(|(index, window)| {
+            *window == FILE_TRANSFER && (*index == 0 || response[*index - 1] == b'\n')
+        })
+        .map(|(index, _)| index)
     else {
         return Ok(None);
     };
@@ -70,6 +93,12 @@ fn take_file_request(response: &mut Vec<u8>) -> CursorResult<Option<String>> {
         .to_owned();
     response.truncate(marker);
     Ok(Some(command))
+}
+
+fn refuse_upload(sock: &mut ServerSock, error: &CursorError) -> CursorResult<()> {
+    let mut message = error.to_string().replace(['\r', '\n'], " ");
+    message.push('\n');
+    write_fragment(sock, message.as_bytes(), true)
 }
 
 fn send_upload(mut sock: ServerSock, data: &[u8]) -> CursorResult<ServerSock> {
@@ -148,6 +177,12 @@ mod tests {
             Some("rb c0".into())
         );
         assert_eq!(response, b"&2 3\n");
+        assert_eq!(take_file_request(&mut response).unwrap(), None);
+    }
+
+    #[test]
+    fn ignores_embedded_file_transfer_marker() {
+        let mut response = b"[ \"prefix\x01\x03\nrb not-a-request\"\t]\n".to_vec();
         assert_eq!(take_file_request(&mut response).unwrap(), None);
     }
 }

@@ -130,7 +130,7 @@ impl Connection {
             });
             Ok(sock)
         })?;
-        Ok(info.expect("connection state is available while locked"))
+        info.ok_or(CursorError::Closed)
     }
 
     /// Enable or disable server-side autocommit for this connection.
@@ -186,7 +186,7 @@ impl Conn {
             ServerSock,
         ) -> CursorResult<ServerSock>,
     {
-        let mut guard = self.locked.lock().unwrap();
+        let mut guard = self.locked.lock().map_err(|_| CursorError::Poisoned)?;
         let Some(sock) = guard.sock.take() else {
             return Err(CursorError::Closed);
         };
@@ -197,6 +197,17 @@ impl Conn {
                 Ok(())
             }
             Err(e) => Err(e),
+        }
+    }
+
+    pub(crate) fn try_queue_closes(&self, result_ids: &[u64]) {
+        let mut guard = match self.locked.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return,
+        };
+        for result_id in result_ids {
+            guard.delayed.add_xcommand("close", result_id);
         }
     }
 }
@@ -219,7 +230,7 @@ impl ServerMetadata {
         while cursor.next_row()? {
             let name = cursor
                 .get_str(0)?
-                .expect("sys.environment.name should not be null");
+                .ok_or(CursorError::Metadata("sys.environment.name is null"))?;
             let value = cursor.get_str(1)?.unwrap_or("");
             environment.insert(name.to_string(), value.to_string());
         }

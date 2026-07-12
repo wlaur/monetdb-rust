@@ -16,6 +16,12 @@ repository = "https://github.com/MonetDB/monetdb-rust"
 [lib]
 # doctest = false
 
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
 
 [profile.release]
 # needed for 'cargo flamegraph'

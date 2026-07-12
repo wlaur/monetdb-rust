@@ -35,6 +35,8 @@ pub enum BadReply {
     TooManyColumns(u64),
     #[error("too few columns in result set: {0}")]
     TooFewColumns(usize),
+    #[error("result header includes {included} rows but reports only {total} total rows")]
+    TooManyIncludedRows { included: u64, total: u64 },
     #[error("invalid backslash escape in result set")]
     InvalidBackslashEscape,
     #[error("column index {0} out of bounds, have only {1} columns")]
@@ -131,16 +133,20 @@ impl ReplyBuf {
             }
             // Here, wr <= rd < end
 
+            // SAFETY: the loop invariant above guarantees `rd < end`.
             let b = unsafe { rd.read() };
             rd = rd.wrapping_add(1);
             // Now, wr < rd <= end
 
             let unescaped = if b == b'\\' {
                 // avail is nr of bytes available AFTER the backslash
+                // SAFETY: `rd` and `end` originate from the same Vec allocation,
+                // and the loop invariant guarantees `rd <= end`.
                 let avail = unsafe { end.offset_from(rd) };
                 if avail < 1 {
                     return Err(BadReply::InvalidBackslashEscape);
                 }
+                // SAFETY: `avail >= 1` proves `rd` points to an initialized byte.
                 let chr = unsafe { rd.read() };
                 rd = rd.wrapping_add(1);
                 match chr {
@@ -156,8 +162,12 @@ impl ReplyBuf {
                         if avail < 3 {
                             return Err(BadReply::UnexpectedEnd);
                         }
+                        // SAFETY: `avail >= 3` proves both remaining escape bytes
+                        // are initialized and within the allocation.
                         let e2 = unsafe { rd.read().wrapping_sub(b'0') };
                         rd = rd.wrapping_add(1);
+                        // SAFETY: `avail >= 3` proves this byte is initialized and
+                        // within the same allocation.
                         let e3 = unsafe { rd.read().wrapping_sub(b'0') };
                         rd = rd.wrapping_add(1);
                         if ((e2 | e3) & 0b1111_1000) != 0 {
@@ -175,12 +185,18 @@ impl ReplyBuf {
             };
             // rd may have moved but still, wr < rd <= end
 
+            // SAFETY: `wr <= rd <= end`; unescaping never expands input, so `wr`
+            // always points at initialized capacity within the Vec allocation.
             unsafe { wr.write(unescaped) };
             wr = wr.wrapping_add(1);
             // wr <= rd <= end
         }
 
+        // SAFETY: both pointers were derived from `self.data` and remain within
+        // that allocation (or one-past it).
         let rd_offset = unsafe { rd.offset_from(self.data.as_mut_ptr()) as usize };
+        // SAFETY: both pointers were derived from `self.data` and remain within
+        // that allocation (or one-past it).
         let wr_offset = unsafe { wr.offset_from(self.data.as_mut_ptr()) as usize };
 
         let old_pos = self.pos;
@@ -264,6 +280,7 @@ pub struct ResultSet {
     pub prepared: bool,
     pub next_row: u64,
     pub total_rows: u64,
+    pub rows_included: u64,
     pub columns: Vec<ResultColumn>,
     pub row_set: RowSet,
     pub stashed: Option<RowSet>,
@@ -397,6 +414,12 @@ impl ReplyParser {
 
     pub(crate) fn parse_header<T: FromStr>(buf: &mut ReplyBuf, dest: &mut [T]) -> RResult<()> {
         let line = buf.split_str(b'\n', "header line")?.trim_ascii();
+        let bytes = line.as_bytes();
+        if bytes.len() < 3 || bytes[0] != b'&' || !bytes[1].is_ascii_digit() || bytes[2] != b' ' {
+            return Err(BadReply::InvalidHeader(format!(
+                "expected '&<digit> ' prefix: {line}"
+            )));
+        }
         let mut parts = line[3..].split(' ');
         for (i, d) in dest.iter_mut().enumerate() {
             let Some(p) = parts.next() else {
@@ -439,6 +462,12 @@ impl ReplyParser {
         let mut fields = [0; 4];
         Self::parse_header(&mut buf, &mut fields)?;
         let [result_id, rows_total, ncols, rows_included] = fields;
+        if rows_included > rows_total {
+            return Err(BadReply::TooManyIncludedRows {
+                included: rows_included,
+                total: rows_total,
+            });
+        }
         if ncols > usize::MAX as u64 {
             return Err(BadReply::TooManyColumns(ncols));
         }
@@ -494,6 +523,7 @@ impl ReplyParser {
             prepared,
             next_row: 0,
             total_rows: rows_total,
+            rows_included,
             columns,
             row_set,
             to_close,
@@ -593,7 +623,7 @@ pub fn from_utf8<'a>(context: &'static str, bytes: &'a [u8]) -> RResult<&'a str>
 
 #[cfg(test)]
 mod tests {
-    use super::{ReplyParser, ResultSet};
+    use super::{BadReply, ReplyParser, ResultSet};
 
     #[test]
     fn parses_prepare_result_header() {
@@ -621,5 +651,39 @@ mod tests {
         assert!(prepared);
         assert_eq!(total_rows, 1);
         assert_eq!(to_close, None);
+    }
+
+    #[test]
+    fn rejects_short_headers_without_panicking() {
+        for response in ["&", "&1", "x1 2\n"] {
+            let parsed = ReplyParser::new(response.as_bytes().to_vec());
+            assert!(matches!(
+                parsed,
+                Err(BadReply::InvalidHeader(_)
+                    | BadReply::UnknownResponse(_)
+                    | BadReply::UnexpectedEnd
+                    | BadReply::SepNotFound(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_more_included_rows_than_total_rows() {
+        let response = concat!(
+            "&1 17 1 1 2\n",
+            "% t # table_name\n",
+            "% c # name\n",
+            "% int # type\n",
+            "% 32 # length\n",
+            "% 0 0 # typesizes\n",
+            "[ 1\t]\n"
+        );
+        assert!(matches!(
+            ReplyParser::new(response.as_bytes().to_vec()),
+            Err(BadReply::TooManyIncludedRows {
+                included: 2,
+                total: 1
+            })
+        ));
     }
 }
