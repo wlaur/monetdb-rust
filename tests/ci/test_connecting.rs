@@ -28,8 +28,6 @@ fn test_metadata() -> AResult<()> {
     let metadata = conn.metadata()?;
     let version = metadata.version();
     assert!(version >= (11, 3, 3));
-    assert!(version.0 >= 11);
-    assert!(version.1 >= 1);
     assert_some!(metadata.env("monet_release"));
     Ok(())
 }

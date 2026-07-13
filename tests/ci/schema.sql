@@ -19,7 +19,7 @@ CREATE TABLE temporal(
 -- 1000 * 1000 goes back to about year -748.
 INSERT INTO temporal
 SELECT
-    value AS i,
+    CAST(value AS INT) AS i,
     NOW - value * value * INTERVAL '87654' SECOND
 FROM
     sys.generate_series(0, 1000)
