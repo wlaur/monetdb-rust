@@ -15,6 +15,7 @@ mod upload;
 
 use std::borrow::Cow;
 use std::mem;
+use std::num::NonZeroUsize;
 use std::{io, sync::Arc};
 
 use delayed::DelayedCommands;
@@ -204,11 +205,26 @@ impl Cursor {
         statements: &str,
         uploads: &std::collections::HashMap<String, Vec<u8>>,
     ) -> CursorResult<()> {
+        self.execute_with_binary_uploads_with_chunk_size(
+            statements,
+            uploads,
+            upload::DEFAULT_UPLOAD_CHUNK_SIZE,
+        )
+    }
+
+    /// Execute SQL while serving named in-memory binary files with a custom
+    /// maximum upload message size. Larger messages reduce prompt round trips.
+    pub fn execute_with_binary_uploads_with_chunk_size(
+        &mut self,
+        statements: &str,
+        uploads: &std::collections::HashMap<String, Vec<u8>>,
+        upload_chunk_size: NonZeroUsize,
+    ) -> CursorResult<()> {
         self.exhaust()?;
 
         let mut vec = self.replies.take_buffer();
         let command = &[b"s", statements.as_bytes(), b"\n;"];
-        self.command_with_uploads(command, &mut vec, |filename| {
+        self.command_with_uploads(command, &mut vec, upload_chunk_size, |filename| {
             uploads
                 .get(filename)
                 .map(|data| Cow::Borrowed(data.as_slice()))
@@ -231,6 +247,24 @@ impl Cursor {
     pub fn execute_with_binary_uploads_lazy<F>(
         &mut self,
         statements: &str,
+        upload: F,
+    ) -> CursorResult<()>
+    where
+        F: FnMut(&str) -> CursorResult<Vec<u8>>,
+    {
+        self.execute_with_binary_uploads_lazy_with_chunk_size(
+            statements,
+            upload::DEFAULT_UPLOAD_CHUNK_SIZE,
+            upload,
+        )
+    }
+
+    /// Execute SQL with lazy binary uploads and a custom maximum upload
+    /// message size. Larger messages reduce prompt round trips.
+    pub fn execute_with_binary_uploads_lazy_with_chunk_size<F>(
+        &mut self,
+        statements: &str,
+        upload_chunk_size: NonZeroUsize,
         mut upload: F,
     ) -> CursorResult<()>
     where
@@ -240,7 +274,7 @@ impl Cursor {
 
         let mut vec = self.replies.take_buffer();
         let command = &[b"s", statements.as_bytes(), b"\n;"];
-        self.command_with_uploads(command, &mut vec, |filename| {
+        self.command_with_uploads(command, &mut vec, upload_chunk_size, |filename| {
             upload(filename).map(Cow::Owned)
         })?;
 
@@ -383,6 +417,21 @@ impl Cursor {
     /// the `&6` header, aligned column buffers, table of contents, and trailing
     /// table-of-contents offset described by `binary-resultset.rst`.
     pub fn fetch_binary(&mut self, start: u64, count: usize) -> CursorResult<Vec<u8>> {
+        let mut response = Vec::new();
+        self.fetch_binary_into(start, count, &mut response)?;
+        Ok(response)
+    }
+
+    /// Fetch a binary row window into a caller-owned buffer.
+    ///
+    /// The buffer is cleared but retains its allocation, allowing callers to
+    /// reuse response capacity across successive windows.
+    pub fn fetch_binary_into(
+        &mut self,
+        start: u64,
+        count: usize,
+        response: &mut Vec<u8>,
+    ) -> CursorResult<()> {
         self.skip_to_result_set()?;
         let result = self.result_set()?;
         if result.prepared {
@@ -404,12 +453,12 @@ impl Cursor {
         let available = result.total_rows - start;
         let count = count.min(usize::try_from(available).unwrap_or(usize::MAX));
         let command = format!("Xexportbin {} {start} {count}", result.result_id);
-        let mut response = Vec::new();
-        self.command(&[command.as_bytes()], &mut response)?;
+        response.clear();
+        self.command(&[command.as_bytes()], response)?;
         if response.first() == Some(&b'!') {
-            ReplyParser::detect_errors(&response)?;
+            ReplyParser::detect_errors(response)?;
         }
-        Ok(response)
+        Ok(())
     }
 
     /// Advance the cursor to the next available row in the result set,

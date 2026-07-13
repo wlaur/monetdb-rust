@@ -6,7 +6,7 @@
 //
 // Copyright 2024 MonetDB Foundation
 
-use std::{borrow::Cow, io::Write};
+use std::{borrow::Cow, io::Write, num::NonZeroUsize};
 
 use crate::framing::{BLOCKSIZE, ServerSock, reading::MapiReader};
 
@@ -16,13 +16,15 @@ use super::{
 
 const FILE_TRANSFER: &[u8] = b"\x01\x03\n";
 const MORE: &[u8] = b"\x01\x02\n";
-const UPLOAD_CHUNK: usize = 1024 * 1024;
+pub(super) const DEFAULT_UPLOAD_CHUNK_SIZE: NonZeroUsize =
+    NonZeroUsize::new(16 * 1024 * 1024).unwrap();
 
 impl Cursor {
     pub(super) fn command_with_uploads<'a, F>(
         &mut self,
         command: &[&[u8]],
         response: &mut Vec<u8>,
+        upload_chunk_size: NonZeroUsize,
         mut upload: F,
     ) -> CursorResult<()>
     where
@@ -64,7 +66,7 @@ impl Cursor {
                             continue;
                         }
                     };
-                    sock = send_upload(sock, &data)?;
+                    sock = send_upload(sock, &data, upload_chunk_size)?;
                 }
             },
         )?;
@@ -103,23 +105,29 @@ fn take_file_request(response: &mut Vec<u8>) -> CursorResult<Option<String>> {
 fn refuse_upload(sock: &mut ServerSock, error: &CursorError) -> CursorResult<()> {
     let mut message = error.to_string().replace(['\r', '\n'], " ");
     message.push('\n');
-    write_fragment(sock, message.as_bytes(), true)
+    write_fragment(sock, message.as_bytes(), true, &mut Vec::new())
 }
 
-fn send_upload(mut sock: ServerSock, data: &[u8]) -> CursorResult<ServerSock> {
+fn send_upload(
+    mut sock: ServerSock,
+    data: &[u8],
+    upload_chunk_size: NonZeroUsize,
+) -> CursorResult<ServerSock> {
+    let mut framed = Vec::new();
     // A non-final message fragment containing just a newline accepts the
     // upload. See pymonetdb.filetransfer.uploads.Upload._raw and MonetDB's
     // clients/mapilib/mapi.c `rb FILE` handling.
-    write_fragment(&mut sock, b"\n", false)?;
+    write_fragment(&mut sock, b"\n", false, &mut framed)?;
 
-    let mut chunks = data.chunks(UPLOAD_CHUNK).peekable();
+    let mut chunks = data.chunks(upload_chunk_size.get()).peekable();
     if chunks.peek().is_none() {
-        write_fragment(&mut sock, b"", true)?;
+        write_fragment(&mut sock, b"", true, &mut framed)?;
         sock = expect_upload_prompt(sock, MORE)?;
     } else {
+        let mut prompt = Vec::new();
         for chunk in chunks {
-            write_fragment(&mut sock, chunk, true)?;
-            let mut prompt = Vec::new();
+            write_fragment(&mut sock, chunk, true, &mut framed)?;
+            prompt.clear();
             sock = MapiReader::to_end(sock, &mut prompt)?;
             if prompt == FILE_TRANSFER {
                 return Ok(sock);
@@ -135,7 +143,7 @@ fn send_upload(mut sock: ServerSock, data: &[u8]) -> CursorResult<ServerSock> {
 
     // MORE after the last data chunk asks for another message. An empty
     // message marks EOF; FILE_TRANSFER acknowledges completion.
-    write_fragment(&mut sock, b"", true)?;
+    write_fragment(&mut sock, b"", true, &mut framed)?;
     expect_upload_prompt(sock, FILE_TRANSFER)
 }
 
@@ -151,22 +159,30 @@ fn expect_upload_prompt(mut sock: ServerSock, expected: &[u8]) -> CursorResult<S
     Ok(sock)
 }
 
-fn write_fragment(sock: &mut ServerSock, mut data: &[u8], finish: bool) -> CursorResult<()> {
+fn write_fragment(
+    sock: &mut impl Write,
+    mut data: &[u8],
+    finish: bool,
+    framed: &mut Vec<u8>,
+) -> CursorResult<()> {
+    framed.clear();
     if data.is_empty() {
         if finish {
-            sock.write_all(&1u16.to_le_bytes())?;
+            framed.extend_from_slice(&1u16.to_le_bytes());
         }
-        return Ok(());
+    } else {
+        framed.reserve(data.len() + 2 * data.len().div_ceil(BLOCKSIZE));
+        while !data.is_empty() {
+            let length = data.len().min(BLOCKSIZE);
+            let (chunk, remaining) = data.split_at(length);
+            let last = finish && remaining.is_empty();
+            let header = ((length as u16) << 1) | u16::from(last);
+            framed.extend_from_slice(&header.to_le_bytes());
+            framed.extend_from_slice(chunk);
+            data = remaining;
+        }
     }
-    while !data.is_empty() {
-        let length = data.len().min(BLOCKSIZE);
-        let (chunk, remaining) = data.split_at(length);
-        let last = finish && remaining.is_empty();
-        let header = ((length as u16) << 1) | u16::from(last);
-        sock.write_all(&header.to_le_bytes())?;
-        sock.write_all(chunk)?;
-        data = remaining;
-    }
+    sock.write_all(framed)?;
     Ok(())
 }
 
@@ -189,5 +205,21 @@ mod tests {
     fn ignores_embedded_file_transfer_marker() {
         let mut response = b"[ \"prefix\x01\x03\nrb not-a-request\"\t]\n".to_vec();
         assert_eq!(take_file_request(&mut response).unwrap(), None);
+    }
+
+    #[test]
+    fn batches_fragment_headers_and_payload() {
+        let data = vec![b'x'; BLOCKSIZE + 1];
+        let mut output = Vec::new();
+        let mut framed = Vec::new();
+        write_fragment(&mut output, &data, true, &mut framed).unwrap();
+
+        assert_eq!(&output[..2], &((BLOCKSIZE as u16) << 1).to_le_bytes());
+        let second_header = 2 + BLOCKSIZE;
+        assert_eq!(
+            &output[second_header..second_header + 2],
+            &3u16.to_le_bytes()
+        );
+        assert_eq!(output.len(), data.len() + 4);
     }
 }

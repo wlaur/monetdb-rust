@@ -7,6 +7,7 @@
 // Copyright 2024 MonetDB Foundation
 
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 
 use anyhow::Result;
 use monetdb::Endian;
@@ -38,13 +39,18 @@ fn test_binary_result_window_and_server_info() -> Result<()> {
     assert_eq!(result.columns[0].name(), "i");
     assert_eq!(result.columns[0].table_name(), ".t");
 
-    let frame = cursor.fetch_binary(1, 2)?;
+    let mut frame = Vec::new();
+    cursor.fetch_binary_into(1, 2, &mut frame)?;
     assert!(
         frame.starts_with(format!("&6 {} 2 2 1\n", result.result_id).as_bytes()),
         "unexpected frame prefix: {:?}",
         &frame[..frame.len().min(80)]
     );
     assert!(frame.len() > 32);
+
+    let capacity = frame.capacity();
+    cursor.fetch_binary_into(1, 1, &mut frame)?;
+    assert!(frame.capacity() >= capacity);
 
     let error = cursor.fetch_binary(4, 1).unwrap_err();
     assert!(error.to_string().contains("invalid binary fetch"));
@@ -207,8 +213,9 @@ fn test_lazy_binary_uploads() -> Result<()> {
     cursor.execute("CREATE TABLE adbc_lazy_binary_upload(i INT, s VARCHAR(8))")?;
 
     let mut requested = Vec::new();
-    cursor.execute_with_binary_uploads_lazy(
+    cursor.execute_with_binary_uploads_lazy_with_chunk_size(
         "COPY LITTLE ENDIAN BINARY INTO adbc_lazy_binary_upload FROM 'c0', 'c1' ON CLIENT",
+        NonZeroUsize::new(4).unwrap(),
         |filename| {
             requested.push(filename.to_owned());
             match filename {
