@@ -326,6 +326,9 @@ It still parses, it will just never match.
 ```test
 ACCEPT monetdbs:///?certhash=sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8550
 ACCEPT monetdbs:///?certhash=sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855000000000000000000000000000000000000000001
+
+REJECT monetdbs:///?certhash=sha256:
+REJECT monetdbs:///?certhash=sha256:::::
 ```
 
 ```test
@@ -1454,4 +1457,3 @@ ACCEPT mapi:monetdb://localhost:12345/db?l%61nguage=mal
 EXPECT language=sql
 ACCEPT mapi:monetdb://localhost:12345/db?_l%61nguage=mal
 ```
-

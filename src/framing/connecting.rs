@@ -327,7 +327,8 @@ fn challenge_response(
     )
     .unwrap();
 
-    let mut state = ServerState::new(prehash_algo_name, chal.endian, chal.binary);
+    let binary_level = chal.binary.min(parms.connect_binary);
+    let mut state = ServerState::new(prehash_algo_name, chal.endian, binary_level);
     let mut delayed = DelayedCommands::new();
 
     if parms.language == "sql" {

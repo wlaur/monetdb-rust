@@ -45,6 +45,21 @@ pub enum BadReply {
 
 pub type RResult<T> = Result<T, BadReply>;
 
+pub(crate) fn response_autocommit(response: &[u8]) -> Option<bool> {
+    response
+        .split(|byte| *byte == b'\n')
+        .filter_map(|line| {
+            if line.starts_with(b"&4 f") {
+                Some(false)
+            } else if line.starts_with(b"&4 t") {
+                Some(true)
+            } else {
+                None
+            }
+        })
+        .next_back()
+}
+
 #[derive(Debug)]
 pub struct ReplyBuf {
     data: Vec<u8>,
@@ -635,7 +650,14 @@ pub fn from_utf8<'a>(context: &'static str, bytes: &'a [u8]) -> RResult<&'a str>
 
 #[cfg(test)]
 mod tests {
-    use super::{BadReply, ReplyParser, ResultSet};
+    use super::{BadReply, ReplyParser, ResultSet, response_autocommit};
+
+    #[test]
+    fn extracts_last_autocommit_status() {
+        assert_eq!(response_autocommit(b"&4 f\n"), Some(false));
+        assert_eq!(response_autocommit(b"&4 f\n&4 t\n"), Some(true));
+        assert_eq!(response_autocommit(b"[ \"&4 f\"\t]\n"), None);
+    }
 
     #[test]
     fn parses_prepare_result_header() {

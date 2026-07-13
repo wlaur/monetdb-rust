@@ -18,7 +18,7 @@ use std::mem;
 use std::{io, sync::Arc};
 
 use delayed::DelayedCommands;
-use replies::{BadReply, ReplyBuf, ReplyParser, ResultColumn, ResultSet};
+use replies::{BadReply, ReplyBuf, ReplyParser, ResultColumn, ResultSet, response_autocommit};
 use rowset::RowSet;
 
 use crate::conn::Conn;
@@ -255,7 +255,7 @@ impl Cursor {
 
     fn command(&mut self, command: &[&[u8]], vec: &mut Vec<u8>) -> Result<(), CursorError> {
         self.conn.run_locked(
-            |_state: &mut ServerState,
+            |state: &mut ServerState,
              delayed: &mut DelayedCommands,
              mut sock: ServerSock|
              -> CursorResult<ServerSock> {
@@ -263,6 +263,9 @@ impl Cursor {
                 sock = delayed.recv_delayed(sock, vec)?;
                 vec.clear();
                 sock = MapiReader::to_end(sock, vec)?;
+                if let Some(autocommit) = response_autocommit(vec) {
+                    state.initial_auto_commit = autocommit;
+                }
                 Ok(sock)
             },
         )?;

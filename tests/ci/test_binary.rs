@@ -120,6 +120,27 @@ fn test_autocommit_control() -> Result<()> {
 }
 
 #[test]
+fn test_sql_transaction_updates_autocommit_state() -> Result<()> {
+    let connection = get_server().connect()?;
+    assert!(connection.server_info()?.autocommit);
+    let mut cursor = connection.cursor();
+    cursor.execute("START TRANSACTION")?;
+    assert!(!connection.server_info()?.autocommit);
+    cursor.execute("COMMIT")?;
+    assert!(connection.server_info()?.autocommit);
+    Ok(())
+}
+
+#[test]
+fn test_client_binary_level_caps_server_capability() -> Result<()> {
+    let mut parameters = get_server().parms();
+    parameters.set_binary("0")?;
+    let connection = monetdb::Connection::new(parameters)?;
+    assert_eq!(connection.server_info()?.binary_level, 0);
+    Ok(())
+}
+
+#[test]
 fn test_failed_delayed_deallocate_preserves_connection() -> Result<()> {
     let connection = get_server().connect()?;
     let mut cursor = connection.cursor();

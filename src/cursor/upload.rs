@@ -10,7 +10,9 @@ use std::{borrow::Cow, io::Write};
 
 use crate::framing::{BLOCKSIZE, ServerSock, reading::MapiReader};
 
-use super::{Cursor, CursorError, CursorResult, delayed::DelayedCommands};
+use super::{
+    Cursor, CursorError, CursorResult, delayed::DelayedCommands, replies::response_autocommit,
+};
 
 const FILE_TRANSFER: &[u8] = b"\x01\x03\n";
 const MORE: &[u8] = b"\x01\x02\n";
@@ -28,7 +30,7 @@ impl Cursor {
     {
         let mut refused = None;
         self.conn.run_locked(
-            |_state,
+            |state,
              delayed: &mut DelayedCommands,
              mut sock: ServerSock|
              -> CursorResult<ServerSock> {
@@ -38,6 +40,9 @@ impl Cursor {
                 loop {
                     sock = MapiReader::to_end(sock, response)?;
                     let Some(request) = take_file_request(response)? else {
+                        if let Some(autocommit) = response_autocommit(response) {
+                            state.initial_auto_commit = autocommit;
+                        }
                         return Ok(sock);
                     };
                     let filename = match request.strip_prefix("rb ") {
