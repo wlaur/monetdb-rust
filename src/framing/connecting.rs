@@ -414,6 +414,7 @@ fn challenge_response(
             delayed.buffer.end();
             delayed.responses.push(ExpectedResponse {
                 description: "ClientInfo".into(),
+                ignore_server_error: false,
             });
         } else if parms.language == "mal" || parms.language == "msql" {
             todo!()

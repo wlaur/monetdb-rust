@@ -17,6 +17,7 @@ use super::CursorResult;
 
 pub struct ExpectedResponse {
     pub description: Cow<'static, str>,
+    pub ignore_server_error: bool,
 }
 
 pub struct DelayedCommands {
@@ -38,6 +39,19 @@ impl DelayedCommands {
     }
 
     pub fn add(&mut self, descr: &'static str, cmd: impl fmt::Display) {
+        self.add_inner(descr, cmd, false);
+    }
+
+    pub fn add_cleanup(&mut self, descr: &'static str, cmd: impl fmt::Display) {
+        self.add_inner(descr, cmd, true);
+    }
+
+    fn add_inner(
+        &mut self,
+        descr: &'static str,
+        cmd: impl fmt::Display,
+        ignore_server_error: bool,
+    ) {
         use fmt::Write;
         write!(self.buffer, "{}", cmd).unwrap();
         if !self.buffer.peek().ends_with(b"\n") {
@@ -46,11 +60,12 @@ impl DelayedCommands {
         self.buffer.end();
         self.responses.push(ExpectedResponse {
             description: descr.into(),
+            ignore_server_error,
         })
     }
 
-    pub fn add_xcommand(&mut self, command: &'static str, value: impl fmt::Display) {
-        self.add(command, format_args!("X{command} {value}"))
+    pub fn add_xcommand_cleanup(&mut self, command: &'static str, value: impl fmt::Display) {
+        self.add_cleanup(command, format_args!("X{command} {value}"))
     }
 
     pub fn send_delayed(&mut self, mut conn: ServerSock) -> CursorResult<ServerSock> {
@@ -89,6 +104,10 @@ impl DelayedCommands {
             if let Some(err_msg) = buffer.strip_prefix(b"!") {
                 let msg = String::from_utf8_lossy(err_msg);
                 let description = &resp.description;
+                if resp.ignore_server_error {
+                    log::warn!("delayed {description}: {msg}");
+                    continue;
+                }
                 return Err(super::CursorError::Server(format!(
                     "delayed {description}: {msg}"
                 )));

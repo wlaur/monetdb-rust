@@ -304,7 +304,7 @@ impl Cursor {
 
     fn queue_close(&mut self, res_id: u64) -> CursorResult<()> {
         self.conn.run_locked(|_, delayed, sock| {
-            delayed.add_xcommand("close", res_id);
+            delayed.add_xcommand_cleanup("close", res_id);
             Ok(sock)
         })?;
         Ok(())

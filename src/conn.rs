@@ -36,6 +36,7 @@ pub struct Connection(Arc<Conn>);
 pub(crate) struct Conn {
     pub(crate) reply_size: usize,
     locked: Mutex<Locked>,
+    pending_closes: Mutex<Vec<u64>>,
     closing: AtomicBool,
 }
 
@@ -59,6 +60,7 @@ impl Connection {
         };
         let conn = Conn {
             locked: Mutex::new(locked),
+            pending_closes: Mutex::new(Vec::new()),
             closing: AtomicBool::new(false),
             reply_size,
         };
@@ -198,7 +200,17 @@ impl Conn {
         let Some(sock) = guard.sock.take() else {
             return Err(CursorError::Closed);
         };
+        let pending_closes = match self.pending_closes.lock() {
+            Ok(mut pending) => std::mem::take(&mut *pending),
+            Err(poisoned) => {
+                let mut pending = poisoned.into_inner();
+                std::mem::take(&mut *pending)
+            }
+        };
         let Locked { state, delayed, .. } = &mut *guard;
+        for result_id in pending_closes {
+            delayed.add_xcommand_cleanup("close", result_id);
+        }
         let result = f(state, delayed, sock);
         match result {
             Ok(sock) => {
@@ -213,10 +225,17 @@ impl Conn {
         let mut guard = match self.locked.try_lock() {
             Ok(guard) => guard,
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-            Err(TryLockError::WouldBlock) => return,
+            Err(TryLockError::WouldBlock) => {
+                let mut pending = match self.pending_closes.lock() {
+                    Ok(pending) => pending,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                pending.extend_from_slice(result_ids);
+                return;
+            }
         };
         for result_id in result_ids {
-            guard.delayed.add_xcommand("close", result_id);
+            guard.delayed.add_xcommand_cleanup("close", result_id);
         }
     }
 
@@ -231,7 +250,7 @@ impl Conn {
         }
         guard
             .delayed
-            .add("deallocate", format_args!("sDEALLOCATE {statement_id}\n;"));
+            .add_cleanup("deallocate", format_args!("sDEALLOCATE {statement_id}\n;"));
         true
     }
 }

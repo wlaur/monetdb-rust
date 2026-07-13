@@ -89,6 +89,23 @@ fn test_autocommit_control() -> Result<()> {
 }
 
 #[test]
+fn test_failed_delayed_deallocate_preserves_connection() -> Result<()> {
+    let connection = get_server().connect()?;
+    let mut cursor = connection.cursor();
+    cursor.execute("PREPARE SELECT CAST(? AS INT)")?;
+    let statement_id = cursor
+        .prepared_statement_id()
+        .expect("PREPARE should return a statement id");
+    cursor.execute("DEALLOCATE ALL")?;
+    assert!(connection.try_deallocate(statement_id));
+
+    cursor.execute("SELECT 42")?;
+    assert!(cursor.next_row()?);
+    assert_eq!(cursor.get_i32(0)?, Some(42));
+    Ok(())
+}
+
+#[test]
 fn test_binary_uploads() -> Result<()> {
     let mut connection = get_server().connect()?;
     if connection.metadata()?.version() < (11, 41, 0) {
