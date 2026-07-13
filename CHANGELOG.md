@@ -1,10 +1,26 @@
 # Change Log
 
-## mapiproxy NEXTVERSION - YYYY-MM-DD
+## monetdb NEXTVERSION - YYYY-MM-DD
 
 New features:
 
-- Add Connection::metadata() method to information about the server.
+- Add binary result-set metadata and window retrieval through `Xexportbin`,
+  including reusable response buffers.
+
+- Add eager and lazy in-memory `COPY BINARY ... ON CLIENT` uploads, buffered
+  writes, and configurable upload message sizes.
+
+- Recognize PREPARE metadata results and expose their server-side statement
+  ids. Prepared statements can be queued for nonblocking deallocation.
+
+- Add `Connection::metadata()`, `Connection::server_info()`, and runtime
+  autocommit control.
+
+- Preserve source table names separately from bare result-column names and
+  recognize additional MonetDB types used by binary clients.
+
+- Add TLS 1.3 support with system, custom-CA, SHA-256 certificate-pin, and
+  mutual-TLS authentication modes.
 
 - Add connect_timeout setting.
 
@@ -12,10 +28,27 @@ Bug fixes:
 
 - Fix build issue on Windows, Unix domain sockets are not supported there.
 
+- Fix Unix-socket selection, short reply-header panics, malformed result
+  residency metadata, and unchecked server-controlled allocations.
+
+- Keep synchronized connections usable after refused uploads, stale delayed
+  cleanup commands, and rejected autocommit changes.
+
+- Track transaction replies in connection state and honor the client binary
+  level when reporting the negotiated server capability.
+
 Other:
 
 - Add integration tests, by default they try to connect to
   `monetdb:///test-monetdb-rust`.
+
+- Move the crate to Rust 2024 and test current stable toolchains.
+
+Breaking changes:
+
+- `ResultColumn::name()` now returns the bare result-column name. Use
+  `ResultColumn::table_name()` for its source table; earlier development
+  versions combined the two in `name()`.
 
 
 ## mapiproxy 0.2.0 - 2024-10-04

@@ -52,44 +52,39 @@ Current status
 * Support for MonetDB Jun2020 (11.37.7) and higher. Older versions are highly
   likely to work but haven't been tested. If you need this, just ask.
 
-* Rust 1.80 and higher, older versions have not yet been tested.
+* Rust 2024 edition; current stable Rust is the supported toolchain.
 
 * The full `monetdb://` connection URL syntax is supported, though not all features have been implemented.
 
-* Most data types can be retrieved in string form using `get_str()`.
-  Exception: blobs
+* Most data types can be retrieved in string form using `get_str()`, with
+  typed conversions for primitive, decimal, temporal, UUID, and BLOB values.
 
 * The primitive types bool, i8/u8, i16/u16, i32/u32, i64/u64, i128/u128,
   isize/usize, f32/f64 have typed getters, for example `get_i8()`.
 
 * A single call to `Cursor::execute()` can return multiple result sets.
 
-* extremely basic and untested TLS (`monetdbs://`) support can optionally be
-  compiled in.
+* Optional TLS 1.3 (`monetdbs://`) support includes platform verification,
+  custom certificate authorities, SHA-256 certificate pins, and mutual TLS.
+
+* Binary result windows are available through [`Cursor::fetch_binary()`] and
+  [`Cursor::fetch_binary_into()`].
+
+* `COPY BINARY ... ON CLIENT` can upload eager or lazily produced in-memory
+  files, with configurable message sizes.
+
+* PREPARE result metadata and statement ids are exposed for clients that
+  implement parameter binding.
 
 Not implemented yet but planned:
 
 * parametrized queries
-
-* start transaction / commit / rollback
-
-* typed getters for decimal and temporal types
-
-* BLOB support
-
-* Full TLS support
-
-* file transfers
-
-* Binary result set
 
 * Adaptive paging window sizes
 
 * scanning /tmp for Unix Domain sockets
 
 * Non-SQL, for example language=mal for MonetDB's tracing / profiling API
-
-* PREPARE STATEMENT
 
 * Async, seems to be needed for [sqlx]
 
@@ -104,20 +99,20 @@ Not implemented yet but planned:
 Optional features
 -----------------
 
-The `monetdb` crate currently defines the following optional features:
+The `monetdb` crate defines the following optional features:
 
-* **rustls** Enable a first stab at supporting TLS connections using
-  [rustls](https://crates.io/crates/rustls/). The TLS-related configuration
-  parameters such as `cert=` and `clientkey=` aren't supported yet and there is
-  no testing, but a basic `monetdbs://` URL seems to work.
-  To try it, pass it on the command line like this:
+* **rustls** Enable TLS connections using
+  [rustls](https://crates.io/crates/rustls/). URL parameters select system
+  verification, a custom CA (`cert=`), a SHA-256 certificate pin
+  (`certhash=`), and optional client certificates (`clientkey=` and
+  `clientcert=`). To enable it, pass it on the command line like this:
   ```plain
   cargo run --features=rustls --example testconnect -- monetdbs://my.tls.host/demo
   ```
   or enable it in your application's Cargo.toml like this:
   ```plain
   [dependencies]
-  monetdb = { version="0.1.1", features=["rustls"]}
+  monetdb = { version="0.2", features=["rustls"]}
   ```
 
 * **uuid** Enable support for UUID's as defined by the [uuid crate](https://crates.io/crates/uuid).
@@ -129,4 +124,3 @@ The `monetdb` crate currently defines the following optional features:
 
 * **decimal-rs** Enable support for Decimal as defined by the [decimal-rs crate](https://crates.io/crates/decimal-rs).
   Disabled by default.
-

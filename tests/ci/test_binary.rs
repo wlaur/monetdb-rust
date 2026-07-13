@@ -170,8 +170,8 @@ fn test_binary_uploads() -> Result<()> {
         return Ok(());
     }
     let mut cursor = connection.cursor();
-    cursor.execute("DROP TABLE IF EXISTS adbc_binary_upload")?;
-    cursor.execute("CREATE TABLE adbc_binary_upload(i INT, s VARCHAR(8))")?;
+    cursor.execute("DROP TABLE IF EXISTS monetdb_rust_binary_upload")?;
+    cursor.execute("CREATE TABLE monetdb_rust_binary_upload(i INT, s VARCHAR(8))")?;
 
     let ints = [
         1i32.to_le_bytes(),
@@ -182,12 +182,12 @@ fn test_binary_uploads() -> Result<()> {
     let strings = b"one\0two\0\x80\0".to_vec();
     let uploads = HashMap::from([("c0".into(), ints), ("c1".into(), strings)]);
     cursor.execute_with_binary_uploads(
-        "COPY LITTLE ENDIAN BINARY INTO adbc_binary_upload FROM 'c0', 'c1' ON CLIENT",
+        "COPY LITTLE ENDIAN BINARY INTO monetdb_rust_binary_upload FROM 'c0', 'c1' ON CLIENT",
         &uploads,
     )?;
     assert_eq!(cursor.affected_rows(), Some(3));
 
-    cursor.execute("SELECT i, s FROM adbc_binary_upload ORDER BY i NULLS LAST")?;
+    cursor.execute("SELECT i, s FROM monetdb_rust_binary_upload ORDER BY i NULLS LAST")?;
     assert!(cursor.next_row()?);
     assert_eq!(cursor.get_i32(0)?, Some(1));
     assert_eq!(cursor.get_str(1)?, Some("one"));
@@ -198,7 +198,7 @@ fn test_binary_uploads() -> Result<()> {
     assert_eq!(cursor.get_i32(0)?, None);
     assert_eq!(cursor.get_str(1)?, None);
     assert!(!cursor.next_row()?);
-    cursor.execute("DROP TABLE adbc_binary_upload")?;
+    cursor.execute("DROP TABLE monetdb_rust_binary_upload")?;
     Ok(())
 }
 
@@ -209,12 +209,12 @@ fn test_lazy_binary_uploads() -> Result<()> {
         return Ok(());
     }
     let mut cursor = connection.cursor();
-    cursor.execute("DROP TABLE IF EXISTS adbc_lazy_binary_upload")?;
-    cursor.execute("CREATE TABLE adbc_lazy_binary_upload(i INT, s VARCHAR(8))")?;
+    cursor.execute("DROP TABLE IF EXISTS monetdb_rust_lazy_binary_upload")?;
+    cursor.execute("CREATE TABLE monetdb_rust_lazy_binary_upload(i INT, s VARCHAR(8))")?;
 
     let mut requested = Vec::new();
     cursor.execute_with_binary_uploads_lazy_with_chunk_size(
-        "COPY LITTLE ENDIAN BINARY INTO adbc_lazy_binary_upload FROM 'c0', 'c1' ON CLIENT",
+        "COPY LITTLE ENDIAN BINARY INTO monetdb_rust_lazy_binary_upload FROM 'c0', 'c1' ON CLIENT",
         NonZeroUsize::new(4).unwrap(),
         |filename| {
             requested.push(filename.to_owned());
@@ -230,7 +230,7 @@ fn test_lazy_binary_uploads() -> Result<()> {
     assert_eq!(requested, ["c0", "c1"]);
     assert_eq!(cursor.affected_rows(), Some(2));
 
-    cursor.execute("SELECT i, s FROM adbc_lazy_binary_upload ORDER BY i")?;
+    cursor.execute("SELECT i, s FROM monetdb_rust_lazy_binary_upload ORDER BY i")?;
     assert!(cursor.next_row()?);
     assert_eq!(cursor.get_i32(0)?, Some(1));
     assert_eq!(cursor.get_str(1)?, Some("one"));
@@ -238,7 +238,7 @@ fn test_lazy_binary_uploads() -> Result<()> {
     assert_eq!(cursor.get_i32(0)?, Some(2));
     assert_eq!(cursor.get_str(1)?, Some("two"));
     assert!(!cursor.next_row()?);
-    cursor.execute("DROP TABLE adbc_lazy_binary_upload")?;
+    cursor.execute("DROP TABLE monetdb_rust_lazy_binary_upload")?;
     Ok(())
 }
 
@@ -249,12 +249,12 @@ fn test_empty_binary_upload_preserves_connection() -> Result<()> {
         return Ok(());
     }
     let mut cursor = connection.cursor();
-    cursor.execute("DROP TABLE IF EXISTS adbc_empty_binary_upload")?;
-    cursor.execute("CREATE TABLE adbc_empty_binary_upload(i INT)")?;
+    cursor.execute("DROP TABLE IF EXISTS monetdb_rust_empty_binary_upload")?;
+    cursor.execute("CREATE TABLE monetdb_rust_empty_binary_upload(i INT)")?;
 
     let uploads = HashMap::from([("c0".into(), Vec::new())]);
     cursor.execute_with_binary_uploads(
-        "COPY LITTLE ENDIAN BINARY INTO adbc_empty_binary_upload FROM 'c0' ON CLIENT",
+        "COPY LITTLE ENDIAN BINARY INTO monetdb_rust_empty_binary_upload FROM 'c0' ON CLIENT",
         &uploads,
     )?;
     assert_eq!(cursor.affected_rows(), Some(0));
@@ -262,7 +262,7 @@ fn test_empty_binary_upload_preserves_connection() -> Result<()> {
     cursor.execute("SELECT 42")?;
     assert!(cursor.next_row()?);
     assert_eq!(cursor.get_i32(0)?, Some(42));
-    cursor.execute("DROP TABLE adbc_empty_binary_upload")?;
+    cursor.execute("DROP TABLE monetdb_rust_empty_binary_upload")?;
     Ok(())
 }
 
@@ -273,12 +273,12 @@ fn test_refused_binary_upload_preserves_connection() -> Result<()> {
         return Ok(());
     }
     let mut cursor = connection.cursor();
-    cursor.execute("DROP TABLE IF EXISTS adbc_refused_binary_upload")?;
-    cursor.execute("CREATE TABLE adbc_refused_binary_upload(i INT)")?;
+    cursor.execute("DROP TABLE IF EXISTS monetdb_rust_refused_binary_upload")?;
+    cursor.execute("CREATE TABLE monetdb_rust_refused_binary_upload(i INT)")?;
 
     let error = cursor
         .execute_with_binary_uploads_lazy(
-            "COPY LITTLE ENDIAN BINARY INTO adbc_refused_binary_upload FROM 'c0' ON CLIENT",
+            "COPY LITTLE ENDIAN BINARY INTO monetdb_rust_refused_binary_upload FROM 'c0' ON CLIENT",
             |_| {
                 Err(monetdb::CursorError::FileTransfer(
                     "intentional refusal".into(),
@@ -288,9 +288,9 @@ fn test_refused_binary_upload_preserves_connection() -> Result<()> {
         .unwrap_err();
     assert!(error.to_string().contains("intentional refusal"));
 
-    cursor.execute("SELECT COUNT(*) FROM adbc_refused_binary_upload")?;
+    cursor.execute("SELECT COUNT(*) FROM monetdb_rust_refused_binary_upload")?;
     assert!(cursor.next_row()?);
     assert_eq!(cursor.get_i64(0)?, Some(0));
-    cursor.execute("DROP TABLE adbc_refused_binary_upload")?;
+    cursor.execute("DROP TABLE monetdb_rust_refused_binary_upload")?;
     Ok(())
 }
