@@ -137,6 +137,7 @@ impl Connection {
 
     /// Enable or disable server-side autocommit for this connection.
     pub fn set_autocommit(&self, enabled: bool) -> CursorResult<()> {
+        let mut response_error = None;
         self.0.run_locked(|state, delayed, mut sock| {
             let mut response = Vec::new();
             sock = delayed.send_delayed_plus(
@@ -149,17 +150,23 @@ impl Connection {
             let expected = if enabled { b"&4 t" } else { b"&4 f" };
             if !response.is_empty() && !response.starts_with(expected) {
                 if let Some(message) = response.strip_prefix(b"!") {
-                    return Err(CursorError::Server(
+                    response_error = Some(CursorError::Server(
                         String::from_utf8_lossy(message).trim().to_owned(),
                     ));
+                } else {
+                    response_error = Some(CursorError::BadReply(
+                        crate::cursor::replies::BadReply::UnexpectedHeader(response.into()),
+                    ));
                 }
-                return Err(CursorError::BadReply(
-                    crate::cursor::replies::BadReply::UnexpectedHeader(response.into()),
-                ));
+                return Ok(sock);
             }
             state.initial_auto_commit = enabled;
             Ok(sock)
-        })
+        })?;
+        match response_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// Queue a prepared statement for deallocation without waiting for network I/O.
