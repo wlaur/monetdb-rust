@@ -186,6 +186,7 @@ fn test_decimal_rs() {
 fn test_std_duration() {
     use std::time::Duration;
     assert_parses("86400.000", Duration::from_secs(24 * 3600));
+    assert_parse_fails::<Duration>("1.0000");
     // Negative durations are not supported
     assert_parse_fails::<Duration>("-86400.000");
 }

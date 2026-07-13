@@ -59,10 +59,11 @@ impl<T> RawDecimal<T> {
                     }
                     None => return Err(InvalidDecimal::OutOfRange),
                 },
-                b'.' => {
+                b'.' if !saw_period => {
                     scale = 0;
                     saw_period = true;
                 }
+                b'.' => break,
                 _ => break,
             }
             digits = rest;
@@ -120,7 +121,7 @@ macro_rules! raw_decimal {
                     // fractional part not completely cleared
                     return None;
                 }
-                let sc = <$type>::scale10(s - self.1);
+                let sc = (10 as $type).checked_pow(u32::from(s - self.1))?;
                 self.0.checked_mul(sc)
             }
         }
@@ -254,6 +255,14 @@ fn test_fromstr_no_period() {
 }
 
 #[test]
+fn test_fromstr_rejects_multiple_periods() {
+    assert_eq!(
+        RawDecimal::<i32>::from_str("1.2.3"),
+        Err(InvalidDecimal::UnexpectedCharacter('.'))
+    );
+}
+
+#[test]
 fn test_fractional_scale_overflow() {
     let value = format!("0.{}", "0".repeat(256));
     assert_eq!(
@@ -269,6 +278,9 @@ fn test_at_scale() {
     assert_eq!(RawDecimal(123i32, 2).at_scale(2), Some(123));
     assert_eq!(RawDecimal(123i32, 2).at_scale(3), Some(1230));
     assert_eq!(RawDecimal(123i32, 2).at_scale(4), Some(12300));
+    assert_eq!(RawDecimal(0i8, 0).at_scale(3), None);
+    assert_eq!(RawDecimal(1i8, 0).at_scale(3), None);
+    assert_eq!(RawDecimal(-1i8, 0).at_scale(3), None);
 }
 
 #[test]
@@ -276,239 +288,4 @@ fn test_eq() {
     assert_eq!(RawDecimal(10, 0), RawDecimal(10, 0));
     assert_eq!(RawDecimal(100, 1), RawDecimal(100, 1));
     assert_eq!(RawDecimal(10, 0), RawDecimal(100, 1));
-}
-
-pub trait Scale10
-where
-    Self: Clone + Copy,
-{
-    const SCALE10: [Self; 256];
-
-    fn scale10(s: u8) -> Self {
-        let table = &Self::SCALE10;
-        table[s as usize]
-    }
-}
-
-impl Scale10 for i8 {
-    const SCALE10: [Self; 256] = {
-        let mut table = [Self::MAX; 256];
-        table[0] = 1;
-        table[1] = 10;
-        table[2] = 100;
-        table
-    };
-}
-
-impl Scale10 for u8 {
-    const SCALE10: [Self; 256] = {
-        let mut table = [Self::MAX; 256];
-        table[0] = 1;
-        table[1] = 10;
-        table[2] = 100;
-        table
-    };
-}
-
-impl Scale10 for i16 {
-    const SCALE10: [Self; 256] = {
-        let mut table = [Self::MAX; 256];
-        table[0] = 1;
-        table[1] = 10;
-        table[2] = 100;
-        table[3] = 1000;
-        table[4] = 10000;
-        table
-    };
-}
-
-impl Scale10 for u16 {
-    const SCALE10: [Self; 256] = {
-        let mut table = [Self::MAX; 256];
-        table[0] = 1;
-        table[1] = 10;
-        table[2] = 100;
-        table[3] = 1000;
-        table[4] = 10000;
-        table
-    };
-}
-
-impl Scale10 for i32 {
-    const SCALE10: [Self; 256] = {
-        let mut table = [Self::MAX; 256];
-        table[0] = 1;
-        table[1] = 10;
-        table[2] = 100;
-        table[3] = 1000;
-        table[4] = 10000;
-        table[5] = 100000;
-        table[6] = 1000000;
-        table[7] = 10000000;
-        table[8] = 100000000;
-        table[9] = 1000000000;
-        table
-    };
-}
-
-impl Scale10 for u32 {
-    const SCALE10: [Self; 256] = {
-        let mut table = [Self::MAX; 256];
-        table[0] = 1;
-        table[1] = 10;
-        table[2] = 100;
-        table[3] = 1000;
-        table[4] = 10000;
-        table[5] = 100000;
-        table[6] = 1000000;
-        table[7] = 10000000;
-        table[8] = 100000000;
-        table[9] = 1000000000;
-        table
-    };
-}
-
-impl Scale10 for i64 {
-    const SCALE10: [Self; 256] = {
-        let mut table = [Self::MAX; 256];
-        table[0] = 1;
-        table[1] = 10;
-        table[2] = 100;
-        table[3] = 1000;
-        table[4] = 10000;
-        table[5] = 100000;
-        table[6] = 1000000;
-        table[7] = 10000000;
-        table[8] = 100000000;
-        table[9] = 1000000000;
-        table[10] = 10000000000;
-        table[11] = 100000000000;
-        table[12] = 1000000000000;
-        table[13] = 10000000000000;
-        table[14] = 100000000000000;
-        table[15] = 1000000000000000;
-        table[16] = 10000000000000000;
-        table[17] = 100000000000000000;
-        table[18] = 1000000000000000000;
-        table
-    };
-}
-
-impl Scale10 for u64 {
-    const SCALE10: [Self; 256] = {
-        let mut table = [Self::MAX; 256];
-        table[0] = 1;
-        table[1] = 10;
-        table[2] = 100;
-        table[3] = 1000;
-        table[4] = 10000;
-        table[5] = 100000;
-        table[6] = 1000000;
-        table[7] = 10000000;
-        table[8] = 100000000;
-        table[9] = 1000000000;
-        table[10] = 10000000000;
-        table[11] = 100000000000;
-        table[12] = 1000000000000;
-        table[13] = 10000000000000;
-        table[14] = 100000000000000;
-        table[15] = 1000000000000000;
-        table[16] = 10000000000000000;
-        table[17] = 100000000000000000;
-        table[18] = 1000000000000000000;
-        table[19] = 10000000000000000000;
-        table
-    };
-}
-
-impl Scale10 for i128 {
-    const SCALE10: [Self; 256] = {
-        let mut table = [Self::MAX; 256];
-        table[0] = 1;
-        table[1] = 10;
-        table[2] = 100;
-        table[3] = 1000;
-        table[4] = 10000;
-        table[5] = 100000;
-        table[6] = 1000000;
-        table[7] = 10000000;
-        table[8] = 100000000;
-        table[9] = 1000000000;
-        table[10] = 10000000000;
-        table[11] = 100000000000;
-        table[12] = 1000000000000;
-        table[13] = 10000000000000;
-        table[14] = 100000000000000;
-        table[15] = 1000000000000000;
-        table[16] = 10000000000000000;
-        table[17] = 100000000000000000;
-        table[18] = 1000000000000000000;
-        table[19] = 10000000000000000000;
-        table[20] = 100000000000000000000;
-        table[21] = 1000000000000000000000;
-        table[22] = 10000000000000000000000;
-        table[23] = 100000000000000000000000;
-        table[24] = 1000000000000000000000000;
-        table[25] = 10000000000000000000000000;
-        table[26] = 100000000000000000000000000;
-        table[27] = 1000000000000000000000000000;
-        table[28] = 10000000000000000000000000000;
-        table[29] = 100000000000000000000000000000;
-        table[30] = 1000000000000000000000000000000;
-        table[31] = 10000000000000000000000000000000;
-        table[32] = 100000000000000000000000000000000;
-        table[33] = 1000000000000000000000000000000000;
-        table[34] = 10000000000000000000000000000000000;
-        table[35] = 100000000000000000000000000000000000;
-        table[36] = 1000000000000000000000000000000000000;
-        table[37] = 10000000000000000000000000000000000000;
-        table[38] = 100000000000000000000000000000000000000;
-        table
-    };
-}
-
-impl Scale10 for u128 {
-    const SCALE10: [Self; 256] = {
-        let mut table = [Self::MAX; 256];
-        table[0] = 1;
-        table[1] = 10;
-        table[2] = 100;
-        table[3] = 1000;
-        table[4] = 10000;
-        table[5] = 100000;
-        table[6] = 1000000;
-        table[7] = 10000000;
-        table[8] = 100000000;
-        table[9] = 1000000000;
-        table[10] = 10000000000;
-        table[11] = 100000000000;
-        table[12] = 1000000000000;
-        table[13] = 10000000000000;
-        table[14] = 100000000000000;
-        table[15] = 1000000000000000;
-        table[16] = 10000000000000000;
-        table[17] = 100000000000000000;
-        table[18] = 1000000000000000000;
-        table[19] = 10000000000000000000;
-        table[20] = 100000000000000000000;
-        table[21] = 1000000000000000000000;
-        table[22] = 10000000000000000000000;
-        table[23] = 100000000000000000000000;
-        table[24] = 1000000000000000000000000;
-        table[25] = 10000000000000000000000000;
-        table[26] = 100000000000000000000000000;
-        table[27] = 1000000000000000000000000000;
-        table[28] = 10000000000000000000000000000;
-        table[29] = 100000000000000000000000000000;
-        table[30] = 1000000000000000000000000000000;
-        table[31] = 10000000000000000000000000000000;
-        table[32] = 100000000000000000000000000000000;
-        table[33] = 1000000000000000000000000000000000;
-        table[34] = 10000000000000000000000000000000000;
-        table[35] = 100000000000000000000000000000000000;
-        table[36] = 1000000000000000000000000000000000000;
-        table[37] = 10000000000000000000000000000000000000;
-        table[38] = 100000000000000000000000000000000000000;
-        table
-    };
 }

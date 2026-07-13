@@ -8,6 +8,7 @@
 
 use std::{
     collections::HashMap,
+    num::NonZeroUsize,
     sync::{
         Arc, Mutex, TryLockError,
         atomic::{self, AtomicBool},
@@ -35,6 +36,7 @@ pub struct Connection(Arc<Conn>);
 
 pub(crate) struct Conn {
     pub(crate) reply_size: usize,
+    pub(crate) max_response_size: usize,
     locked: Mutex<Locked>,
     pending_closes: Mutex<Vec<u64>>,
     closing: AtomicBool,
@@ -52,6 +54,7 @@ impl Connection {
         let (sock, state, delayed) = establish_connection(parameters)?;
 
         let reply_size = state.reply_size;
+        let max_response_size = state.max_response_size;
 
         let locked = Locked {
             state,
@@ -63,6 +66,7 @@ impl Connection {
             pending_closes: Mutex::new(Vec::new()),
             closing: AtomicBool::new(false),
             reply_size,
+            max_response_size,
         };
         let connection = Connection(Arc::new(conn));
 
@@ -99,7 +103,8 @@ impl Connection {
         }
     }
 
-    pub fn metadata(&mut self) -> CursorResult<ServerMetadata> {
+    /// Return server environment and version metadata, loading it on first use.
+    pub fn metadata(&self) -> CursorResult<ServerMetadata> {
         let mut inner = None;
         self.0.run_locked(|state, _delayed, sock| {
             inner = state.sql_metadata.clone();
@@ -126,7 +131,7 @@ impl Connection {
             info = Some(ServerInfo {
                 endian: state.server_endian,
                 binary_level: state.binary_level,
-                autocommit: state.initial_auto_commit,
+                autocommit: state.autocommit,
                 reply_size: state.reply_size,
                 time_zone_seconds: state.time_zone_seconds,
             });
@@ -144,9 +149,9 @@ impl Connection {
                 sock,
                 &[format!("Xauto_commit {}", i32::from(enabled)).as_bytes()],
             )?;
-            sock = delayed.recv_delayed(sock, &mut response)?;
+            sock = delayed.recv_delayed(sock, &mut response, self.0.max_response_size)?;
             response.clear();
-            sock = MapiReader::to_end(sock, &mut response)?;
+            sock = MapiReader::to_limited(sock, &mut response, self.0.max_response_size)?;
             let expected = if enabled { b"&4 t" } else { b"&4 f" };
             if !response.is_empty() && !response.starts_with(expected) {
                 if let Some(message) = response.strip_prefix(b"!") {
@@ -160,7 +165,7 @@ impl Connection {
                 }
                 return Ok(sock);
             }
-            state.initial_auto_commit = enabled;
+            state.autocommit = enabled;
             Ok(sock)
         })?;
         match response_error {
@@ -181,10 +186,15 @@ impl Connection {
 /// Protocol capabilities negotiated for a live connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServerInfo {
+    /// Byte order advertised by the server during the handshake.
     pub endian: Endian,
+    /// Highest binary result-set protocol level supported by both peers.
     pub binary_level: u16,
+    /// Current server-side autocommit state cached from protocol replies.
     pub autocommit: bool,
+    /// Session-level text result window size.
     pub reply_size: usize,
+    /// Session time-zone offset east of UTC, in seconds.
     pub time_zone_seconds: i32,
 }
 
@@ -204,6 +214,10 @@ impl Conn {
         ) -> CursorResult<ServerSock>,
     {
         let mut guard = self.locked.lock().map_err(|_| CursorError::Poisoned)?;
+        if self.closing.load(atomic::Ordering::Acquire) {
+            guard.sock = None;
+            return Err(CursorError::Closed);
+        }
         let Some(sock) = guard.sock.take() else {
             return Err(CursorError::Closed);
         };
@@ -221,6 +235,10 @@ impl Conn {
         let result = f(state, delayed, sock);
         match result {
             Ok(sock) => {
+                if self.closing.load(atomic::Ordering::Acquire) {
+                    drop(sock);
+                    return Err(CursorError::Closed);
+                }
                 guard.sock = Some(sock);
                 Ok(())
             }
@@ -273,8 +291,9 @@ pub struct InnerServerMetadata {
 }
 
 impl ServerMetadata {
-    fn new(conn: &mut Connection) -> CursorResult<Self> {
+    fn new(conn: &Connection) -> CursorResult<Self> {
         let mut cursor = conn.cursor();
+        cursor.set_reply_size(NonZeroUsize::new(1024).unwrap());
         cursor.execute("SELECT name, value FROM sys.environment")?;
         let mut environment = HashMap::new();
         while cursor.next_row()? {
@@ -299,7 +318,7 @@ impl ServerMetadata {
                 ));
             };
             s.parse()
-                .map_err(|_| CursorError::Metadata("invalid int component in 'monet_release'"))
+                .map_err(|_| CursorError::Metadata("invalid int component in 'monet_version'"))
         };
         let major = next_part()?;
         let minor = next_part()?;

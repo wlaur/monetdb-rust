@@ -6,12 +6,14 @@
 //
 // Copyright 2024 MonetDB Foundation
 
-use std::{borrow::Cow, io::Write, num::NonZeroUsize};
+use std::{borrow::Cow, io::Write, mem, num::NonZeroUsize};
 
 use crate::framing::{BLOCKSIZE, ServerSock, reading::MapiReader};
 
 use super::{
-    Cursor, CursorError, CursorResult, delayed::DelayedCommands, replies::response_autocommit,
+    Cursor, CursorError, CursorResult,
+    delayed::DelayedCommands,
+    replies::{ReplyParser, response_autocommit},
 };
 
 const FILE_TRANSFER: &[u8] = b"\x01\x03\n";
@@ -37,13 +39,13 @@ impl Cursor {
              mut sock: ServerSock|
              -> CursorResult<ServerSock> {
                 sock = delayed.send_delayed_plus(sock, command)?;
-                sock = delayed.recv_delayed(sock, response)?;
+                sock = delayed.recv_delayed(sock, response, self.conn.max_response_size)?;
                 response.clear();
                 loop {
-                    sock = MapiReader::to_end(sock, response)?;
+                    sock = MapiReader::to_limited(sock, response, self.conn.max_response_size)?;
                     let Some(request) = take_file_request(response)? else {
                         if let Some(autocommit) = response_autocommit(response) {
-                            state.initial_auto_commit = autocommit;
+                            state.autocommit = autocommit;
                         }
                         return Ok(sock);
                     };
@@ -54,7 +56,9 @@ impl Cursor {
                                 "unsupported server request {request:?}"
                             ));
                             refuse_upload(&mut sock, &error)?;
-                            refused = Some(error);
+                            if refused.is_none() {
+                                refused = Some(error);
+                            }
                             continue;
                         }
                     };
@@ -62,16 +66,54 @@ impl Cursor {
                         Ok(data) => data,
                         Err(error) => {
                             refuse_upload(&mut sock, &error)?;
-                            refused = Some(error);
+                            if refused.is_none() {
+                                refused = Some(error);
+                            }
                             continue;
                         }
                     };
-                    sock = send_upload(sock, &data, upload_chunk_size)?;
+                    match send_upload(sock, &data, upload_chunk_size, self.conn.max_response_size)?
+                    {
+                        UploadOutcome::Complete(next) => sock = next,
+                        UploadOutcome::ServerResponse(next, final_response) => {
+                            sock = next;
+                            response.extend_from_slice(&final_response);
+                            if let Some(autocommit) = response_autocommit(response) {
+                                state.autocommit = autocommit;
+                            }
+                            return Ok(sock);
+                        }
+                    }
                 }
             },
         )?;
         if let Some(error) = refused {
-            Err(error)
+            let mut response_problem = ReplyParser::detect_errors(response)
+                .err()
+                .map(|error| error.to_string());
+            match ReplyParser::new(mem::take(response)) {
+                Ok(replies) => {
+                    self.replies = replies;
+                    if let Err(error) = self.exhaust()
+                        && response_problem.is_none()
+                    {
+                        response_problem = Some(error.to_string());
+                    }
+                }
+                Err(error) => {
+                    if response_problem.is_none() {
+                        response_problem = Some(error.to_string());
+                    }
+                }
+            }
+            if let Some(server) = response_problem {
+                Err(CursorError::UploadRefused {
+                    refusal: Box::new(error),
+                    server,
+                })
+            } else {
+                Err(error)
+            }
         } else {
             Ok(())
         }
@@ -112,7 +154,8 @@ fn send_upload(
     mut sock: ServerSock,
     data: &[u8],
     upload_chunk_size: NonZeroUsize,
-) -> CursorResult<ServerSock> {
+    max_response_size: usize,
+) -> CursorResult<UploadOutcome> {
     let mut framed = Vec::new();
     // A non-final message fragment containing just a newline accepts the
     // upload. See pymonetdb.filetransfer.uploads.Upload._raw and MonetDB's
@@ -122,21 +165,21 @@ fn send_upload(
     let mut chunks = data.chunks(upload_chunk_size.get()).peekable();
     if chunks.peek().is_none() {
         write_fragment(&mut sock, b"", true, &mut framed)?;
-        sock = expect_upload_prompt(sock, MORE)?;
+        match expect_upload_prompt(sock, MORE, max_response_size)? {
+            UploadOutcome::Complete(next) => sock = next,
+            response @ UploadOutcome::ServerResponse(..) => return Ok(response),
+        }
     } else {
         let mut prompt = Vec::new();
         for chunk in chunks {
             write_fragment(&mut sock, chunk, true, &mut framed)?;
             prompt.clear();
-            sock = MapiReader::to_end(sock, &mut prompt)?;
+            sock = MapiReader::to_limited(sock, &mut prompt, max_response_size)?;
             if prompt == FILE_TRANSFER {
-                return Ok(sock);
+                return Ok(UploadOutcome::Complete(sock));
             }
             if prompt != MORE {
-                return Err(CursorError::FileTransfer(format!(
-                    "unexpected upload prompt {:?}",
-                    String::from_utf8_lossy(&prompt)
-                )));
+                return Ok(UploadOutcome::ServerResponse(sock, prompt));
             }
         }
     }
@@ -144,19 +187,26 @@ fn send_upload(
     // MORE after the last data chunk asks for another message. An empty
     // message marks EOF; FILE_TRANSFER acknowledges completion.
     write_fragment(&mut sock, b"", true, &mut framed)?;
-    expect_upload_prompt(sock, FILE_TRANSFER)
+    expect_upload_prompt(sock, FILE_TRANSFER, max_response_size)
 }
 
-fn expect_upload_prompt(mut sock: ServerSock, expected: &[u8]) -> CursorResult<ServerSock> {
+fn expect_upload_prompt(
+    mut sock: ServerSock,
+    expected: &[u8],
+    max_response_size: usize,
+) -> CursorResult<UploadOutcome> {
     let mut prompt = Vec::new();
-    sock = MapiReader::to_end(sock, &mut prompt)?;
-    if prompt != expected {
-        return Err(CursorError::FileTransfer(format!(
-            "unexpected upload prompt {:?}",
-            String::from_utf8_lossy(&prompt)
-        )));
+    sock = MapiReader::to_limited(sock, &mut prompt, max_response_size)?;
+    if prompt == expected {
+        Ok(UploadOutcome::Complete(sock))
+    } else {
+        Ok(UploadOutcome::ServerResponse(sock, prompt))
     }
-    Ok(sock)
+}
+
+enum UploadOutcome {
+    Complete(ServerSock),
+    ServerResponse(ServerSock, Vec<u8>),
 }
 
 fn write_fragment(

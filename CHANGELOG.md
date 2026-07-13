@@ -51,7 +51,7 @@ Breaking changes:
   versions combined the two in `name()`.
 
 
-## mapiproxy 0.2.0 - 2024-10-04
+## monetdb 0.2.0 - 2024-10-04
 
 First public release.
 

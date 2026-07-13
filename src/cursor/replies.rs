@@ -6,8 +6,6 @@
 //
 // Copyright 2024 MonetDB Foundation
 
-#![allow(dead_code)]
-
 use std::{error, mem, str::FromStr};
 
 use bstr::{BStr, BString, ByteSlice};
@@ -41,6 +39,10 @@ pub enum BadReply {
     InvalidBackslashEscape,
     #[error("column index {0} out of bounds, have only {1} columns")]
     ColumnIndexOutOfBounds(usize, usize),
+    #[error("result id {actual} in export reply does not match requested result id {expected}")]
+    ResultIdMismatch { expected: u64, actual: u64 },
+    #[error("export reply has {actual} columns, expected {expected}")]
+    ColumnCountMismatch { expected: usize, actual: u64 },
 }
 
 pub type RResult<T> = Result<T, BadReply>;
@@ -75,10 +77,6 @@ impl ReplyBuf {
         self.data
     }
 
-    pub fn mut_vec(&mut self) -> &mut Vec<u8> {
-        &mut self.data
-    }
-
     pub fn peek(&self) -> &[u8] {
         &self.data[self.pos..]
     }
@@ -87,12 +85,16 @@ impl ReplyBuf {
         self.peek().is_empty()
     }
 
-    pub fn consume(&mut self, nbytes: usize) -> &mut [u8] {
-        assert!(nbytes <= self.data.len() - self.pos);
-        let newpos = self.pos + nbytes;
+    pub fn consume(&mut self, nbytes: usize) -> RResult<&mut [u8]> {
+        let Some(newpos) = self.pos.checked_add(nbytes) else {
+            return Err(BadReply::UnexpectedEnd);
+        };
+        if newpos > self.data.len() {
+            return Err(BadReply::UnexpectedEnd);
+        }
         let ret = &mut self.data[self.pos..newpos];
         self.pos = newpos;
-        ret
+        Ok(ret)
     }
 
     pub fn find(&self, byte: u8) -> Option<usize> {
@@ -123,7 +125,7 @@ impl ReplyBuf {
                 return Err(BadReply::SepNotFound(sep));
             }
         };
-        let ret = self.consume(end + 1);
+        let ret = self.consume(end + 1)?;
         Ok(&mut ret[..end])
     }
 
@@ -228,9 +230,9 @@ fn test_convert_backslashes() {
             panic!("test data must have opening quote");
         };
         let mut buf = ReplyBuf::new(s.into());
-        buf.consume(opening_quote_idx);
+        buf.consume(opening_quote_idx).unwrap();
         assert!(buf.peek().starts_with(b"\""), "{}", BStr::new(buf.peek()));
-        buf.consume(1);
+        buf.consume(1).unwrap();
         // now we have the buf where we want it, right after the opening quote.
 
         let actual: Result<&BStr, BadReply> = buf.convert_backslashes(skip).map(|x| BStr::new(x));
@@ -285,7 +287,6 @@ pub enum ReplyParser {
     Data(ResultSet),
     Tx {
         buf: ReplyBuf,
-        auto_commit: bool,
     },
 }
 
@@ -345,7 +346,7 @@ impl ReplyParser {
         use ReplyParser::*;
         let buf = match self {
             Exhausted(vec) => ReplyBuf::new(vec),
-            Error(buf) | Success { buf, .. } | Tx { buf, .. } => buf,
+            Error(buf) | Success { buf, .. } | Tx { buf } => buf,
             Data(
                 ResultSet {
                     stashed: Some(row_set),
@@ -360,7 +361,7 @@ impl ReplyParser {
                 },
             ) => {
                 return_to_close = to_close;
-                row_set.finish()
+                row_set.finish()?
             }
         };
 
@@ -464,7 +465,8 @@ impl ReplyParser {
                 "invalid autocommit header: {line}"
             )));
         };
-        Ok(ReplyParser::Tx { buf, auto_commit })
+        let _ = auto_commit;
+        Ok(ReplyParser::Tx { buf })
     }
 
     fn parse_error(mut buf: ReplyBuf) -> RResult<ReplyParser> {

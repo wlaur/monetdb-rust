@@ -68,6 +68,8 @@ pub enum Parm {
     ClientApplication,
     #[enumeration(rename = "client_remark")]
     ClientRemark,
+    #[enumeration(rename = "max_response_size")]
+    MaxResponseSize,
 
     // Unused but recognized to pass the tests
     TableSchema,
@@ -104,6 +106,7 @@ impl Parm {
             Parm::ClientInfo => "client_info",
             Parm::ClientApplication => "client_application",
             Parm::ClientRemark => "client_remark",
+            Parm::MaxResponseSize => "max_response_size",
             Parm::TableSchema => "tableschema",
             Parm::Table => "table",
             Parm::Hash => "hash",
@@ -154,7 +157,7 @@ impl Parm {
         use ParmType::*;
         match self {
             Tls | Autocommit | ClientInfo => Bool,
-            Port | ReplySize | Timezone | MaxPrefetch | ConnectTimeout => Int,
+            Port | ReplySize | Timezone | MaxPrefetch | ConnectTimeout | MaxResponseSize => Int,
             _ => Str,
         }
     }
@@ -203,6 +206,10 @@ fn test_parm_names() {
         Ok(Parm::ClientApplication)
     );
     assert_eq!(Parm::from_str("client_remark"), Ok(Parm::ClientRemark));
+    assert_eq!(
+        Parm::from_str("max_response_size"),
+        Ok(Parm::MaxResponseSize)
+    );
     // special case
     assert_eq!(Parm::from_str("fetchsize"), Ok(Parm::ReplySize));
 
@@ -421,7 +428,7 @@ impl From<usize> for Value {
 /// If you want to create a table indexed by [`Parm`], the table must
 /// have at least this number of elements. Use [`Parm::index`] to convert
 /// Parms to usizes.
-pub const PARM_TABLE_SIZE: usize = 30;
+pub const PARM_TABLE_SIZE: usize = 31;
 
 #[test]
 fn test_parm_table_size() {
@@ -499,6 +506,8 @@ const fn default_parameter_value_by_index(idx: usize) -> Value {
         Value::from_static("on") // we can't yet, but we'd like to
     } else if idx == ClientInfo.index() {
         Value::Bool(true)
+    } else if idx == MaxResponseSize.index() {
+        Value::Int(1024 * 1024 * 1024)
     } else {
         Value::from_static("")
     }
@@ -850,6 +859,17 @@ impl Parameters {
         self.set_client_remark(value)?;
         Ok(self)
     }
+
+    /// Limit the size in bytes of any post-login protocol message.
+    pub fn set_max_response_size(&mut self, value: impl Into<i64>) -> ParmResult<()> {
+        self.set(Parm::MaxResponseSize, value.into())
+    }
+
+    /// Set the maximum size in bytes of any post-login protocol message.
+    pub fn with_max_response_size(mut self, value: impl Into<i64>) -> ParmResult<Parameters> {
+        self.set_max_response_size(value)?;
+        Ok(self)
+    }
 }
 
 /// Indicates how the TLS certificate of the server must be verified.
@@ -898,6 +918,7 @@ pub struct Validated<'a> {
     pub connect_clientcert: Cow<'a, str>,
     pub connect_binary: u16,
     pub connect_timeout: Option<Duration>,
+    pub max_response_size: usize,
 }
 
 impl Validated<'_> {
@@ -927,6 +948,7 @@ impl Validated<'_> {
         let raw_timezone: i64 = parms.get_int(Timezone)?;
         let raw_binary: &Value = parms.get(Binary);
         let raw_connect_timeout: Option<i64> = parms.get(ConnectTimeout).int_value();
+        let raw_max_response_size = parms.get_int(MaxResponseSize)?;
 
         let raw_client_info = parms.get_bool(ClientInfo)?;
         let raw_client_application = parms.get_str(ClientApplication)?;
@@ -982,7 +1004,7 @@ impl Validated<'_> {
         //    empty, database must also not be empty.
         let database = Self::valid_name(Database, raw_database)?;
         let _tableschema = Self::valid_name(TableSchema, raw_tableschema)?;
-        let _table = Self::valid_name(Schema, raw_table)?;
+        let _table = Self::valid_name(Table, raw_table)?;
 
         // 8. Parameter port must be -1 or in the range 1-65535.
         let connect_port = match raw_port {
@@ -1052,7 +1074,13 @@ impl Validated<'_> {
         };
 
         let connect_timezone_seconds = if parms.timezone_set {
-            Some(raw_timezone as i32 * 60)
+            let minutes =
+                i32::try_from(raw_timezone).map_err(|_| ParmError::InvalidValue(Parm::Timezone))?;
+            Some(
+                minutes
+                    .checked_mul(60)
+                    .ok_or(ParmError::InvalidValue(Parm::Timezone))?,
+            )
         } else {
             None
         };
@@ -1062,9 +1090,14 @@ impl Validated<'_> {
             _ => None,
         };
 
-        let Ok(replysize) = raw_replysize.try_into() else {
-            return Err(ParmError::InvalidInt(Parm::ReplySize));
-        };
+        let replysize = usize::try_from(raw_replysize)
+            .ok()
+            .filter(|replysize| *replysize != 0)
+            .ok_or(ParmError::InvalidValue(Parm::ReplySize))?;
+        let max_response_size = usize::try_from(raw_max_response_size)
+            .ok()
+            .filter(|size| *size != 0)
+            .ok_or(ParmError::InvalidValue(Parm::MaxResponseSize))?;
 
         // Construct object
 
@@ -1079,6 +1112,7 @@ impl Validated<'_> {
             replysize,
             schema: raw_schema,
             connect_timeout,
+            max_response_size,
             client_info: raw_client_info,
             client_application: raw_client_application,
             client_remark: raw_client_remark,
@@ -1144,4 +1178,36 @@ impl Parameters {
         let selection = Parm::iter().filter(|p| !p.is_sensitive());
         url_from_parms(self, selection)
     }
+}
+
+#[test]
+fn validation_rejects_non_positive_reply_sizes() {
+    for reply_size in [-1, 0] {
+        let mut parameters = Parameters::default();
+        parameters.set_replysize(reply_size).unwrap();
+        assert!(matches!(
+            parameters.validate(),
+            Err(ParmError::InvalidValue(Parm::ReplySize))
+        ));
+    }
+}
+
+#[test]
+fn validation_rejects_timezone_overflow() {
+    let mut parameters = Parameters::default();
+    parameters.set_timezone(i64::from(i32::MAX)).unwrap();
+    assert!(matches!(
+        parameters.validate(),
+        Err(ParmError::InvalidValue(Parm::Timezone))
+    ));
+}
+
+#[test]
+fn validation_rejects_non_positive_response_limit() {
+    let mut parameters = Parameters::default();
+    parameters.set_max_response_size(0).unwrap();
+    assert!(matches!(
+        parameters.validate(),
+        Err(ParmError::InvalidValue(Parm::MaxResponseSize))
+    ));
 }

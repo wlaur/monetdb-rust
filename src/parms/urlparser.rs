@@ -32,6 +32,12 @@ pub fn parse_any_url(parms: &mut Parameters, url: &str) -> ParmResult<()> {
 fn parse_monetdb_url(parms: &mut Parameters, use_tls: bool, url: &str) -> ParmResult<()> {
     let parsed = Url::parse(url).map_err(|e| ParmError::InvalidUrl(e.to_string()))?;
 
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(ParmError::InvalidUrl(
+            "user information is not allowed after ://; use ?user= and &password=".into(),
+        ));
+    }
+
     parms.set_tls(use_tls)?;
 
     let host: Cow<'static, str> = match parsed.host() {
@@ -133,11 +139,7 @@ fn percent_encode(buffer: &mut String, s: &str) {
         let safe = matches!(
             byte,
             b'a' ..= b'z' | b'A' ..= b'Z' | b'0' ..= b'9'
-            | b'-' | b'.' | b'_' | b'~' | b'!'
-            | b'#' | b'$' | b'&' | b'\'' | b'('
-            | b')' | b'*' | b'+' | b',' | b'/'
-            | b':' | b';' | b'=' | b'?' | b'@'
-            | b'[' | b']'
+            | b'-' | b'.' | b'_' | b'~'
         );
         if safe {
             buffer.push(byte as char);
@@ -179,6 +181,22 @@ fn test_percent_decode() {
     check("F%F", Err(ParmError::InvalidPercentEncoding));
 
     check("F%80O", Err(ParmError::InvalidPercentUtf8));
+}
+
+#[test]
+fn modern_urls_reject_userinfo() {
+    let error = Parameters::from_url("monetdb://user:pass@localhost/database").unwrap_err();
+    assert!(matches!(error, ParmError::InvalidUrl(_)));
+}
+
+#[test]
+fn generated_query_values_escape_url_structure() {
+    let parameters = Parameters::basic("database", "user", "a&b=c?/+#").unwrap();
+    let url = parameters.url_with_credentials().unwrap();
+    let parsed = Parameters::from_url(&url).unwrap();
+
+    assert_eq!(parsed.get_str(Parm::User).unwrap(), "user");
+    assert_eq!(parsed.get_str(Parm::Password).unwrap(), "a&b=c?/+#");
 }
 
 fn parse_legacy_url(parms: &mut Parameters, url: &str) -> ParmResult<()> {

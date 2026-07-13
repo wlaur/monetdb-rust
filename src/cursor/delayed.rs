@@ -6,8 +6,6 @@
 //
 // Copyright 2024 MonetDB Foundation
 
-#![allow(dead_code)]
-
 use core::fmt;
 use std::{borrow::Cow, io::Write};
 
@@ -87,8 +85,9 @@ impl DelayedCommands {
         &mut self,
         conn: ServerSock,
         buffer: &mut Vec<u8>,
+        max_response_size: usize,
     ) -> CursorResult<ServerSock> {
-        let res = self.recv_delayed_inner(conn, buffer);
+        let res = self.recv_delayed_inner(conn, buffer, max_response_size);
         buffer.clear();
         res
     }
@@ -97,10 +96,11 @@ impl DelayedCommands {
         &mut self,
         mut conn: ServerSock,
         buffer: &mut Vec<u8>,
+        max_response_size: usize,
     ) -> CursorResult<ServerSock> {
         for resp in self.responses.drain(..) {
             buffer.clear();
-            conn = MapiReader::to_end(conn, buffer)?;
+            conn = MapiReader::to_limited(conn, buffer, max_response_size)?;
             if let Some(err_msg) = buffer.strip_prefix(b"!") {
                 let msg = String::from_utf8_lossy(err_msg);
                 let description = &resp.description;
