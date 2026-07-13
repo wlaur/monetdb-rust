@@ -55,7 +55,7 @@ impl<T> RawDecimal<T> {
                 b'0'..=b'9' => match Self::multiply_accumulate(acc, d - b'0') {
                     Some(new) => {
                         acc = new;
-                        scale += 1;
+                        scale = u8::checked_add(scale, 1).ok_or(InvalidDecimal::OutOfRange)?;
                     }
                     None => return Err(InvalidDecimal::OutOfRange),
                 },
@@ -251,6 +251,15 @@ fn test_fromstr_no_period() {
     let expected = Ok(RawDecimal(-123, 0));
     let actual = "-123".parse::<RawDecimal<i32>>();
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn test_fractional_scale_overflow() {
+    let value = format!("0.{}", "0".repeat(256));
+    assert_eq!(
+        RawDecimal::<i128>::from_str(&value),
+        Err(InvalidDecimal::OutOfRange)
+    );
 }
 
 #[test]

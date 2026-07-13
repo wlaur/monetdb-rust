@@ -94,7 +94,6 @@ impl MapiBuf {
     }
 
     pub fn reset(&mut self) -> &[u8] {
-        let raw_base = self.buffer.as_ptr();
         let mut raw_len = self.buffer.len();
         if self.block_left == BLOCKSIZE {
             raw_len -= 2;
@@ -103,10 +102,13 @@ impl MapiBuf {
         // header yet
         self.buffer.truncate(2);
         self.block_left = BLOCKSIZE;
-        // SAFETY: `raw_base` points into `self.buffer`. Truncating a Vec does not
-        // move or deallocate its allocation, and `raw_len` is the length recorded
-        // before truncation. The returned borrow is tied to `&mut self`, preventing
-        // the buffer from being mutated while the slice is live.
+        let raw_base = self.buffer.as_ptr();
+        // SAFETY: `raw_base` is derived after the mutable `truncate` call and
+        // points to the Vec's current allocation. `raw_len` is no greater than
+        // its capacity, and all bytes in that range were initialized before
+        // truncation; `u8` has no drop glue. The returned borrow is tied to
+        // `&mut self`, so the Vec cannot be mutated or reallocated while the
+        // slice is live.
         unsafe { std::slice::from_raw_parts(raw_base, raw_len) }
     }
 

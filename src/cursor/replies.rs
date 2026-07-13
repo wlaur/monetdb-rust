@@ -8,7 +8,7 @@
 
 #![allow(dead_code)]
 
-use std::{error, iter::repeat_n, mem, str::FromStr};
+use std::{error, mem, str::FromStr};
 
 use bstr::{BStr, BString, ByteSlice};
 use memchr::memmem;
@@ -472,9 +472,20 @@ impl ReplyParser {
             return Err(BadReply::TooManyColumns(ncols));
         }
         let ncols = ncols as usize;
+        // Each of the five column metadata lines needs a `,\t` delimiter for
+        // every column after the first. Reject counts the received reply could
+        // not possibly describe before allocating per-column state.
+        let minimum_metadata_bytes = ncols.saturating_sub(1).saturating_mul(10);
+        if minimum_metadata_bytes > buf.peek().len() {
+            return Err(BadReply::TooManyColumns(ncols as u64));
+        }
         let to_close = (!prepared && rows_included < rows_total).then_some(result_id);
 
-        let mut columns: Vec<ResultColumn> = repeat_n(ResultColumn::empty(), ncols).collect();
+        let mut columns = Vec::new();
+        columns
+            .try_reserve_exact(ncols)
+            .map_err(|_| BadReply::TooManyColumns(ncols as u64))?;
+        columns.resize(ncols, ResultColumn::empty());
 
         // parse the table_name header
         Self::parse_data_header(&mut buf, "table_name", &mut columns, &|col, s| {
@@ -686,5 +697,14 @@ mod tests {
                 total: 1
             })
         ));
+    }
+
+    #[test]
+    fn rejects_column_count_larger_than_reply_metadata() {
+        let response = "&1 17 0 1000000 0\n";
+        assert_eq!(
+            ReplyParser::new(response.as_bytes().to_vec()).unwrap_err(),
+            BadReply::TooManyColumns(1_000_000)
+        );
     }
 }
