@@ -61,7 +61,7 @@ pub enum CursorError {
     #[error("could not retrieve server metadata: {0}")]
     Metadata(&'static str),
     /// A binary fetch requested rows outside the current result set.
-    #[error("binary fetch [{start}, {end}) exceeds result set with {total_rows} rows", end = start.saturating_add(*count as u64))]
+    #[error("invalid binary fetch [{start}, {end}) for result set with {total_rows} rows", end = start.saturating_add(*count as u64))]
     InvalidRange {
         start: u64,
         count: usize,
@@ -385,13 +385,13 @@ impl Cursor {
         if result.prepared {
             return Err(CursorError::PreparedResult);
         }
-        if result.total_rows > 0 && result.rows_included == result.total_rows {
+        if result.rows_included == result.total_rows {
             return Err(CursorError::ResultNotResident {
                 rows_included: result.rows_included,
                 total_rows: result.total_rows,
             });
         }
-        if start > result.total_rows {
+        if count == 0 || start >= result.total_rows {
             return Err(CursorError::InvalidRange {
                 start,
                 count,

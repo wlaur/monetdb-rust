@@ -47,7 +47,15 @@ fn test_binary_result_window_and_server_info() -> Result<()> {
     assert!(frame.len() > 32);
 
     let error = cursor.fetch_binary(4, 1).unwrap_err();
-    assert!(error.to_string().contains("exceeds result set"));
+    assert!(error.to_string().contains("invalid binary fetch"));
+    assert!(matches!(
+        cursor.fetch_binary(3, 1),
+        Err(monetdb::CursorError::InvalidRange { .. })
+    ));
+    assert!(matches!(
+        cursor.fetch_binary(1, 0),
+        Err(monetdb::CursorError::InvalidRange { .. })
+    ));
     Ok(())
 }
 
@@ -75,6 +83,29 @@ fn test_inline_result_reports_not_resident() -> Result<()> {
     ));
     assert!(cursor.next_row()?);
     assert_eq!(cursor.get_i32(0)?, Some(42));
+    Ok(())
+}
+
+#[test]
+fn test_empty_result_reports_not_resident() -> Result<()> {
+    let connection = get_server().connect()?;
+    if connection.server_info()?.binary_level < 1 {
+        return Ok(());
+    }
+
+    let mut cursor = connection.cursor();
+    cursor.execute("SELECT 42 WHERE FALSE")?;
+    let result = cursor.binary_result()?;
+    assert_eq!(result.total_rows, 0);
+    assert_eq!(result.rows_included, 0);
+    assert!(!result.is_server_resident());
+    assert!(matches!(
+        cursor.fetch_binary(0, 1),
+        Err(monetdb::CursorError::ResultNotResident {
+            rows_included: 0,
+            total_rows: 0
+        })
+    ));
     Ok(())
 }
 
@@ -180,6 +211,30 @@ fn test_lazy_binary_uploads() -> Result<()> {
     assert_eq!(cursor.get_str(1)?, Some("two"));
     assert!(!cursor.next_row()?);
     cursor.execute("DROP TABLE adbc_lazy_binary_upload")?;
+    Ok(())
+}
+
+#[test]
+fn test_empty_binary_upload_preserves_connection() -> Result<()> {
+    let mut connection = get_server().connect()?;
+    if connection.metadata()?.version() < (11, 41, 0) {
+        return Ok(());
+    }
+    let mut cursor = connection.cursor();
+    cursor.execute("DROP TABLE IF EXISTS adbc_empty_binary_upload")?;
+    cursor.execute("CREATE TABLE adbc_empty_binary_upload(i INT)")?;
+
+    let uploads = HashMap::from([("c0".into(), Vec::new())]);
+    cursor.execute_with_binary_uploads(
+        "COPY LITTLE ENDIAN BINARY INTO adbc_empty_binary_upload FROM 'c0' ON CLIENT",
+        &uploads,
+    )?;
+    assert_eq!(cursor.affected_rows(), Some(0));
+
+    cursor.execute("SELECT 42")?;
+    assert!(cursor.next_row()?);
+    assert_eq!(cursor.get_i32(0)?, Some(42));
+    cursor.execute("DROP TABLE adbc_empty_binary_upload")?;
     Ok(())
 }
 
