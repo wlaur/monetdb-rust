@@ -1126,6 +1126,9 @@ impl Validated<'_> {
                 _ => return Err(ParmError::InvalidValue(Parm::CertHash)),
             }
         }
+        if digits.is_empty() {
+            return Err(ParmError::InvalidValue(Parm::CertHash));
+        }
         Ok(digits)
     }
 }

@@ -20,6 +20,7 @@ use std::os::unix::net::UnixStream;
 use crate::{conn::InnerServerMetadata, framing::connecting::Endian};
 
 pub const BLOCKSIZE: usize = 8190;
+const READ_BUFFER_SIZE: usize = 64 * 1024;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum FramingError {
@@ -91,34 +92,112 @@ impl ServerSockTrait for UnixStream {}
 impl ServerSockTrait for TcpStream {}
 
 #[derive(Debug)]
-pub struct ServerSock(Box<dyn ServerSockTrait>);
+pub struct ServerSock {
+    inner: Box<dyn ServerSockTrait>,
+    read_buffer: Vec<u8>,
+    read_position: usize,
+}
 
 impl ServerSock {
     fn new(sock: impl ServerSockTrait) -> Self {
-        ServerSock(Box::new(sock))
+        ServerSock {
+            inner: Box::new(sock),
+            read_buffer: Vec::with_capacity(READ_BUFFER_SIZE),
+            read_position: 0,
+        }
     }
 }
 
 impl io::Read for ServerSock {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.0.read(buf)
-    }
-
-    fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
-        self.0.read_vectored(bufs)
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        if self.read_position == self.read_buffer.len() {
+            self.read_buffer.resize(READ_BUFFER_SIZE, 0);
+            let read = self.inner.read(&mut self.read_buffer)?;
+            self.read_buffer.truncate(read);
+            self.read_position = 0;
+        }
+        let available = &self.read_buffer[self.read_position..];
+        let count = available.len().min(buf.len());
+        buf[..count].copy_from_slice(&available[..count]);
+        self.read_position += count;
+        Ok(count)
     }
 }
 
 impl io::Write for ServerSock {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.write(buf)
+        self.inner.write(buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.0.flush()
+        self.inner.flush()
     }
 
     fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
-        self.0.write_vectored(bufs)
+        self.inner.write_vectored(bufs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::{self, Cursor, Read, Write},
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+
+    use super::{ServerSock, ServerSockTrait, blockstate::Header, reading::MapiReader};
+
+    #[derive(Debug)]
+    struct CountingSock {
+        data: Cursor<Vec<u8>>,
+        reads: Arc<AtomicUsize>,
+    }
+
+    impl Read for CountingSock {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            self.data.read(buf)
+        }
+    }
+
+    impl Write for CountingSock {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl ServerSockTrait for CountingSock {}
+
+    #[test]
+    fn read_ahead_preserves_the_next_message() {
+        let mut data = Vec::new();
+        data.extend_from_slice(Header::new(3, true).as_bytes());
+        data.extend_from_slice(b"one");
+        data.extend_from_slice(Header::new(3, true).as_bytes());
+        data.extend_from_slice(b"two");
+        let reads = Arc::new(AtomicUsize::new(0));
+        let raw = CountingSock {
+            data: Cursor::new(data),
+            reads: Arc::clone(&reads),
+        };
+
+        let mut first = Vec::new();
+        let sock = MapiReader::to_end(ServerSock::new(raw), &mut first).unwrap();
+        let mut second = Vec::new();
+        let _sock = MapiReader::to_end(sock, &mut second).unwrap();
+
+        assert_eq!(first, b"one");
+        assert_eq!(second, b"two");
+        assert_eq!(reads.load(Ordering::Relaxed), 1);
     }
 }
