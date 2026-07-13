@@ -8,6 +8,7 @@
 
 use std::{
     collections::HashMap,
+    num::NonZeroUsize,
     sync::{
         Arc, Mutex, TryLockError,
         atomic::{self, AtomicBool},
@@ -292,6 +293,7 @@ pub struct InnerServerMetadata {
 impl ServerMetadata {
     fn new(conn: &Connection) -> CursorResult<Self> {
         let mut cursor = conn.cursor();
+        cursor.set_reply_size(NonZeroUsize::new(1024).unwrap());
         cursor.execute("SELECT name, value FROM sys.environment")?;
         let mut environment = HashMap::new();
         while cursor.next_row()? {
