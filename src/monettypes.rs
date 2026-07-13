@@ -139,7 +139,7 @@ impl MonetType {
             "bigint" => BigInt,
             "hugeint" => HugeInt,
             "oid" => Oid,
-            "char" | "varchar" => Varchar(0),
+            "char" | "str" | "varchar" => Varchar(0),
             "decimal" => Decimal(0, 0),
             "real" => Real,
             "double" => Double,
@@ -180,6 +180,10 @@ mod tests {
             Some(MonetType::GeometryA)
         );
         assert_eq!(MonetType::from_mapi_code("xml"), Some(MonetType::Xml));
+        assert_eq!(
+            MonetType::from_mapi_code("str"),
+            Some(MonetType::Varchar(0))
+        );
         assert_eq!(MonetType::from_mapi_code("inet4"), Some(MonetType::Inet));
         assert_eq!(MonetType::from_mapi_code("inet6"), Some(MonetType::Inet));
     }

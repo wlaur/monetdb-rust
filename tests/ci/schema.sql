@@ -20,7 +20,7 @@ CREATE TABLE temporal(
 INSERT INTO temporal
 SELECT
     CAST(value AS INT) AS i,
-    NOW - value * value * INTERVAL '87654' SECOND
+    NOW - CAST(value * value AS BIGINT) * INTERVAL '87654' SECOND
 FROM
     sys.generate_series(0, 1000)
 ;

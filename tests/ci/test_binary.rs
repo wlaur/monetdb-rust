@@ -173,12 +173,7 @@ fn test_client_binary_level_caps_server_capability() -> Result<()> {
 fn test_failed_delayed_deallocate_preserves_connection() -> Result<()> {
     let connection = get_server().connect()?;
     let mut cursor = connection.cursor();
-    cursor.execute("PREPARE SELECT CAST(? AS INT)")?;
-    let statement_id = cursor
-        .prepared_statement_id()
-        .expect("PREPARE should return a statement id");
-    cursor.execute("DEALLOCATE ALL")?;
-    assert!(connection.try_deallocate(statement_id));
+    assert!(connection.try_deallocate(999_999_999));
 
     cursor.execute("SELECT 42")?;
     assert!(cursor.next_row()?);
