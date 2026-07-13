@@ -13,7 +13,6 @@ tag-message = "Release {{crate_name}} {{version}}"
 
 [[pre-release-replacements]]
 file = "CHANGELOG.md"
-search = "## mapiproxy NEXTVERSION - .*"
+search = "## monetdb NEXTVERSION - .*"
 exactly = 1
-replace = "## mapiproxy NEXTVERSION - YYYY-MM-DD\n\n\n## mapiproxy {{version}} - {{date}}"
-
+replace = "## monetdb NEXTVERSION - YYYY-MM-DD\n\n\n## monetdb {{version}} - {{date}}"

@@ -6,8 +6,6 @@
 //
 // Copyright 2024 MonetDB Foundation
 
-#![allow(dead_code)]
-
 use core::{fmt, str};
 use std::{
     borrow::Cow,
@@ -27,7 +25,10 @@ use gethostname;
 
 use crate::{
     PUBLIC_NAME,
-    cursor::delayed::{DelayedCommands, ExpectedResponse},
+    cursor::{
+        CursorError,
+        delayed::{DelayedCommands, ExpectedResponse},
+    },
     framing::{reading::MapiReader, writing::MapiBuf},
     parms::{Parameters, ParmError, Validated},
     util::{hash_algorithms, ioerror::IoError},
@@ -231,7 +232,8 @@ pub fn establish_connection(
                     // reply, we will do that later
                     return match delayed.send_delayed(sock) {
                         Ok(sock) => Ok((sock, state, delayed)),
-                        Err(e) => Err(ConnectError::Rejected(e.to_string())),
+                        Err(CursorError::IO(error)) => Err(ConnectError::IO(error)),
+                        Err(error) => Err(ConnectError::UnexpectedResponse(error.to_string())),
                     };
                 }
                 Login::Redirect(url) => {
@@ -328,7 +330,12 @@ fn challenge_response(
     .unwrap();
 
     let binary_level = chal.binary.min(parms.connect_binary);
-    let mut state = ServerState::new(prehash_algo_name, chal.endian, binary_level);
+    let mut state = ServerState::new(
+        prehash_algo_name,
+        chal.endian,
+        binary_level,
+        parms.max_response_size,
+    );
     let mut delayed = DelayedCommands::new();
 
     if parms.language == "sql" {
@@ -350,10 +357,10 @@ fn challenge_response(
         };
 
         // MAPI_HANDSHAKE_AUTOCOMMIT = 1,
-        if state.initial_auto_commit != parms.autocommit {
+        if state.autocommit != parms.autocommit {
             let v = parms.autocommit as i64;
             arrange(1, "auto_commit", v, format_args!("Xauto_commit {v}"));
-            state.initial_auto_commit = parms.autocommit;
+            state.autocommit = parms.autocommit;
         }
 
         // MAPI_HANDSHAKE_REPLY_SIZE = 2,
@@ -415,7 +422,7 @@ fn challenge_response(
             delayed.buffer.end();
             delayed.responses.push(ExpectedResponse {
                 description: "ClientInfo".into(),
-                ignore_server_error: false,
+                ignore_server_error: true,
             });
         } else if parms.language == "mal" || parms.language == "msql" {
             todo!()
@@ -455,13 +462,11 @@ fn process_redirects(sock: ServerSock, state: ServerState, reply: &str) -> Conne
 struct Challenge<'a> {
     salt: &'a str,
     server_type: &'a str,
-    protocol: u8,
     response_algos: &'a str,
     endian: Endian,
     prehash_algo: &'a str,
     sql_handshake_option_level: u8,
     binary: u16,
-    oobintr: u16,
     clientinfo: bool,
 }
 
@@ -480,8 +485,8 @@ impl<'a> Challenge<'a> {
             return Err(err("server_type missing"));
         };
 
-        let protocol = match parts.next() {
-            Some("9") => 9,
+        match parts.next() {
+            Some("9") => {}
             Some(_) => return Err(err("unknown protocol")),
             None => return Err(err("protocol missing")),
         };
@@ -502,53 +507,33 @@ impl<'a> Challenge<'a> {
         };
 
         let mut sql_handshake_option_level = 0;
-        if let Some(optlevels) = parts.next() {
-            for optlevel in optlevels.split(',') {
-                if let Some(lvl) = optlevel.strip_prefix("sql=") {
-                    sql_handshake_option_level = lvl
+        let mut binary = 0;
+        let mut clientinfo = false;
+        for field in parts {
+            for option in field.split(',') {
+                if let Some(level) = option.strip_prefix("sql=") {
+                    sql_handshake_option_level = level
                         .parse()
                         .map_err(|_| err("invalid handshake options level"))?;
                 }
             }
-        }
-
-        let binary = if let Some(s) = parts.next() {
-            let Some(n) = s.strip_prefix("BINARY=") else {
-                return Err(err("invalid binary level"));
-            };
-            n.parse().map_err(|_| err("invalid binary level"))?
-        } else {
-            0
-        };
-
-        let oobintr = if let Some(s) = parts.next() {
-            let Some(n) = s.strip_prefix("OOBINTR=") else {
-                return Err(err("invalid binary level"));
-            };
-            n.parse().map_err(|_| err("invalid oobintr level"))?
-        } else {
-            0
-        };
-
-        let clientinfo = if let Some(s) = parts.next() {
-            match s {
-                "CLIENTINFO" => true,
-                _ => return Err(err("invalid clientinfo")),
+            if let Some(level) = field.strip_prefix("BINARY=") {
+                binary = level.parse().map_err(|_| err("invalid binary level"))?;
+            } else if let Some(level) = field.strip_prefix("OOBINTR=") {
+                let _: u16 = level.parse().map_err(|_| err("invalid oobintr level"))?;
+            } else if field == "CLIENTINFO" {
+                clientinfo = true;
             }
-        } else {
-            false
-        };
+        }
 
         let challenge = Challenge {
             salt,
             server_type,
-            protocol,
             response_algos,
             endian,
             prehash_algo,
             sql_handshake_option_level,
             binary,
-            oobintr,
             clientinfo,
         };
         Ok(challenge)
@@ -644,5 +629,26 @@ mod tests {
         let validated = parameters.validate().unwrap();
 
         assert!(connect_socket(&validated).is_err());
+    }
+
+    #[test]
+    fn challenge_optional_fields_are_order_independent_and_extensible() {
+        let challenge = Challenge::new(
+            "salt:mserver:9:SHA512:LIT:SHA512:FUTURE=7:CLIENTINFO:OOBINTR=3:sql=9:BINARY=2:",
+        )
+        .unwrap();
+
+        assert_eq!(challenge.sql_handshake_option_level, 9);
+        assert_eq!(challenge.binary, 2);
+        assert!(challenge.clientinfo);
+    }
+
+    #[test]
+    fn challenge_reports_invalid_oobintr_by_name() {
+        let error = Challenge::new("salt:mserver:9:SHA512:LIT:SHA512:OOBINTR=nope:").unwrap_err();
+        assert_eq!(
+            error,
+            ConnectError::InvalidChallenge("invalid oobintr level".into())
+        );
     }
 }

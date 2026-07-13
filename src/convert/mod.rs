@@ -134,9 +134,12 @@ impl FromMonet for std::time::Duration {
         let Some(decimal) = <RawDecimal<u64> as FromMonet>::extract(rs, colnr)? else {
             return Ok(None);
         };
-        let milliseconds = decimal.at_scale(3).expect(
-            "expect server to send day_interval and second_interval with milliseconds precision",
-        ); // it's always milliseconds
+        let Some(milliseconds) = decimal.at_scale(3) else {
+            return Err(CursorError::Conversion {
+                expected_type: std::any::type_name::<Self>(),
+                message: "interval has precision finer than milliseconds".into(),
+            });
+        };
         let duration = std::time::Duration::from_millis(milliseconds);
         Ok(Some(duration))
     }

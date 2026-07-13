@@ -45,7 +45,6 @@ decimal-rs = [ "dep:decimal-rs" ]
 array-macro = "2.1.8"
 atoi = "2.0.0"
 bstr = "1.10.0"
-claims = "0.7.1"
 decimal-rs = { version="0.1.43", optional = true }
 digest = "0.10.7"
 enum-utils = "0.1.2"
@@ -68,5 +67,6 @@ uuid = { version="1.10.0", optional = true }
 [dev-dependencies]
 anyhow = "1.0.89"
 bstr = "1.10.0"
+claims = "0.7.1"
 itertools = "0.13.0"
 simplelog = "0.12.2"

@@ -6,8 +6,6 @@
 //
 // Copyright 2024 MonetDB Foundation
 
-#![allow(dead_code)]
-
 pub(crate) mod delayed;
 pub(crate) mod replies;
 pub(crate) mod rowset;
@@ -26,7 +24,6 @@ use crate::conn::Conn;
 use crate::convert::{FromMonet, from_utf8};
 use crate::framing::FramingError;
 use crate::framing::reading::MapiReader;
-use crate::framing::writing::MapiBuf;
 use crate::framing::{ServerSock, ServerState};
 use crate::util::ioerror::IoError;
 
@@ -59,6 +56,7 @@ pub enum CursorError {
         expected_type: &'static str,
         message: Cow<'static, str>,
     },
+    /// Required server environment metadata was missing or malformed.
     #[error("could not retrieve server metadata: {0}")]
     Metadata(&'static str),
     /// A binary fetch requested rows outside the current result set.
@@ -71,6 +69,12 @@ pub enum CursorError {
     /// The server requested an invalid or unavailable client-side file.
     #[error("file transfer failed: {0}")]
     FileTransfer(String),
+    /// A client-side upload refusal and the server's final response to it.
+    #[error("{refusal}; server response: {server}")]
+    UploadRefused {
+        refusal: Box<CursorError>,
+        server: String,
+    },
     /// Binary export was requested for a PREPARE metadata result.
     #[error("prepared statement metadata cannot be fetched with Xexportbin")]
     PreparedResult,
@@ -142,7 +146,6 @@ impl From<io::Error> for CursorError {
 /// ```
 pub struct Cursor {
     conn: Arc<Conn>,
-    buf: MapiBuf,
     replies: ReplyParser,
     reply_size: usize,
 }
@@ -167,7 +170,6 @@ impl BinaryResult {
 impl Cursor {
     pub(crate) fn new(conn: Arc<Conn>) -> Self {
         Cursor {
-            buf: MapiBuf::new(),
             replies: ReplyParser::default(),
             reply_size: conn.reply_size,
             conn,
@@ -191,7 +193,7 @@ impl Cursor {
         self.replies = ReplyParser::new(vec)?;
 
         if let Err(err) = error {
-            self.exhaust()?;
+            let _ = self.exhaust();
             return Err(err);
         }
 
@@ -236,7 +238,7 @@ impl Cursor {
         let error = ReplyParser::detect_errors(&vec);
         self.replies = ReplyParser::new(vec)?;
         if let Err(error) = error {
-            self.exhaust()?;
+            let _ = self.exhaust();
             return Err(error);
         }
         Ok(())
@@ -281,24 +283,37 @@ impl Cursor {
         let error = ReplyParser::detect_errors(&vec);
         self.replies = ReplyParser::new(vec)?;
         if let Err(error) = error {
-            self.exhaust()?;
+            let _ = self.exhaust();
             return Err(error);
         }
         Ok(())
     }
 
     fn command(&mut self, command: &[&[u8]], vec: &mut Vec<u8>) -> Result<(), CursorError> {
+        self.command_inner(command, vec, true)
+    }
+
+    fn command_raw(&mut self, command: &[&[u8]], vec: &mut Vec<u8>) -> Result<(), CursorError> {
+        self.command_inner(command, vec, false)
+    }
+
+    fn command_inner(
+        &mut self,
+        command: &[&[u8]],
+        vec: &mut Vec<u8>,
+        update_autocommit: bool,
+    ) -> Result<(), CursorError> {
         self.conn.run_locked(
             |state: &mut ServerState,
              delayed: &mut DelayedCommands,
              mut sock: ServerSock|
              -> CursorResult<ServerSock> {
                 sock = delayed.send_delayed_plus(sock, command)?;
-                sock = delayed.recv_delayed(sock, vec)?;
+                sock = delayed.recv_delayed(sock, vec, self.conn.max_response_size)?;
                 vec.clear();
-                sock = MapiReader::to_end(sock, vec)?;
-                if let Some(autocommit) = response_autocommit(vec) {
-                    state.initial_auto_commit = autocommit;
+                sock = MapiReader::to_limited(sock, vec, self.conn.max_response_size)?;
+                if update_autocommit && let Some(autocommit) = response_autocommit(vec) {
+                    state.autocommit = autocommit;
                 }
                 Ok(sock)
             },
@@ -324,7 +339,6 @@ impl Cursor {
 
     /// Try to move the cursor to the next reply.
     pub fn next_reply(&mut self) -> CursorResult<bool> {
-        // todo: close server side result set if necessary
         let old = mem::take(&mut self.replies);
         let (new, to_close) = old.into_next_reply()?;
         if let Some(res_id) = to_close {
@@ -340,10 +354,7 @@ impl Cursor {
     }
 
     fn queue_close(&mut self, res_id: u64) -> CursorResult<()> {
-        self.conn.run_locked(|_, delayed, sock| {
-            delayed.add_xcommand_cleanup("close", res_id);
-            Ok(sock)
-        })?;
+        self.conn.try_queue_closes(&[res_id]);
         Ok(())
     }
 
@@ -369,7 +380,7 @@ impl Cursor {
         self.conn.run_locked(|_state, delayed, mut sock| {
             if !delayed.responses.is_empty() {
                 sock = delayed.send_delayed(sock)?;
-                sock = delayed.recv_delayed(sock, &mut vec)?;
+                sock = delayed.recv_delayed(sock, &mut vec, self.conn.max_response_size)?;
             }
             Ok(sock)
         })
@@ -454,7 +465,7 @@ impl Cursor {
         let count = count.min(usize::try_from(available).unwrap_or(usize::MAX));
         let command = format!("Xexportbin {} {start} {count}", result.result_id);
         response.clear();
-        self.command(&[command.as_bytes()], response)?;
+        self.command_raw(&[command.as_bytes()], response)?;
         if response.first() == Some(&b'!') {
             ReplyParser::detect_errors(response)?;
         }
@@ -517,20 +528,26 @@ impl Cursor {
         }
     }
 
-    fn decide_next_fetch(&self) -> (u64, u64, usize) {
+    /// Override the number of rows requested by each text-protocol `Xexport`.
+    pub fn set_reply_size(&mut self, reply_size: NonZeroUsize) {
+        self.reply_size = reply_size.get();
+    }
+
+    fn decide_next_fetch(&self) -> (u64, u64, usize, usize) {
         let ResultSet {
             result_id,
             next_row,
             total_rows,
+            columns,
             ..
         } = self.result_set().unwrap();
 
         let n = (total_rows - *next_row).min(self.reply_size as u64) as usize;
-        (*result_id, *next_row, n)
+        (*result_id, *next_row, n, columns.len())
     }
 
     fn fetch_more_rows(&mut self) -> CursorResult<()> {
-        let (res_id, start, n) = self.decide_next_fetch();
+        let (res_id, start, n, expected_columns) = self.decide_next_fetch();
         let cmd = format!("Xexport {res_id} {start} {n}");
 
         // scratch vector. TODO re-use this
@@ -544,8 +561,8 @@ impl Cursor {
         let mut buf = ReplyBuf::new(vec);
         let mut fields = [0u64; 4];
         ReplyParser::parse_header(&mut buf, &mut fields)?;
-        let ncol = fields[1];
-        let mut new_row_set = RowSet::new(buf, ncol as usize);
+        validate_export_header(&fields, res_id, expected_columns)?;
+        let mut new_row_set = RowSet::new(buf, expected_columns);
 
         // If we were reading the initial response, save it.
         // Then install the new rowset, saving the old one if it's the primary.
@@ -581,20 +598,29 @@ impl Cursor {
         Ok(Some(s))
     }
 
-    pub(crate) fn get_map<F, T>(&self, colnr: usize, f: F) -> CursorResult<Option<T>>
-    where
-        F: FnOnce(&[u8]) -> CursorResult<T>,
-    {
-        let Some(field) = self.row_set()?.get_field_raw(colnr) else {
-            return Ok(None);
-        };
-        let value = f(field)?;
-        Ok(Some(value))
-    }
-
     pub fn get<T: FromMonet>(&self, colnr: usize) -> CursorResult<Option<T>> {
         T::extract(self.result_set()?, colnr)
     }
+}
+
+fn validate_export_header(
+    fields: &[u64; 4],
+    expected_result_id: u64,
+    expected_columns: usize,
+) -> Result<(), BadReply> {
+    if fields[0] != expected_result_id {
+        return Err(BadReply::ResultIdMismatch {
+            expected: expected_result_id,
+            actual: fields[0],
+        });
+    }
+    if fields[1] != expected_columns as u64 {
+        return Err(BadReply::ColumnCountMismatch {
+            expected: expected_columns,
+            actual: fields[1],
+        });
+    }
+    Ok(())
 }
 
 macro_rules! define_getter {
@@ -646,5 +672,28 @@ impl Drop for Cursor {
             }
         }
         self.conn.try_queue_closes(&result_ids);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_header_must_match_current_result() {
+        assert_eq!(
+            validate_export_header(&[8, 2, 1, 0], 7, 2),
+            Err(BadReply::ResultIdMismatch {
+                expected: 7,
+                actual: 8,
+            })
+        );
+        assert_eq!(
+            validate_export_header(&[7, 4_000_000_000, 1, 0], 7, 2),
+            Err(BadReply::ColumnCountMismatch {
+                expected: 2,
+                actual: 4_000_000_000,
+            })
+        );
     }
 }

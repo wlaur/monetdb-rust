@@ -52,7 +52,7 @@ pub enum MonetType {
     Double,
     /// 32 bit signed number of months.
     MonthInterval,
-    /// 64 bit signed number of days.
+    /// 64 bit signed number of milliseconds for a day interval.
     DayInterval,
     /// 64 bit signed number of milliseconds.
     SecInterval,

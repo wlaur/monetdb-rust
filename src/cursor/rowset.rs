@@ -46,7 +46,13 @@ impl RowSet {
             self.fields.fill(None);
             return Ok(false);
         }
-        self.buf.consume(2);
+        if self.buf.peek().len() < 2 {
+            return Err(BadReply::UnexpectedEnd);
+        }
+        if !self.buf.peek().starts_with(b"[ ") {
+            return Err(BadReply::UnexpectedHeader(self.buf.peek().into()));
+        }
+        self.buf.consume(2)?;
         for (i, field) in self.fields.iter_mut().enumerate() {
             let comma_skip = (i + 1 < self.ncols) as usize;
             let Some(first) = self.buf.peek().first() else {
@@ -58,25 +64,37 @@ impl RowSet {
                 }
                 b'"' => {
                     // skip it
-                    self.buf.consume(1);
+                    self.buf.consume(1)?;
                     let Some((pos, char)) = self.buf.find2(b'"', b'\\') else {
                         return Err(BadReply::UnexpectedEnd);
                     };
                     if char == b'"' {
                         // no backslashes
                         *field = Some((self.buf.peek().as_ptr(), pos));
-                        // skip the data, the quote, possibly the comma and the tab
-                        self.buf.consume(pos + 1 + comma_skip + 1);
+                        // skip the data and closing quote
+                        self.buf.consume(pos + 1)?;
+                        Self::consume_field_separator(&mut self.buf, comma_skip != 0)?;
                     } else {
                         let unescaped = self.buf.convert_backslashes(pos)?;
                         *field = Some((unescaped.as_ptr(), unescaped.len()));
-                        // buf has already skipped the quote, skip comma and tab
-                        self.buf.consume(comma_skip + 1);
+                        // buf has already skipped the closing quote
+                        Self::consume_field_separator(&mut self.buf, comma_skip != 0)?;
                     }
                 }
                 _ => {
                     let rough: &[u8] = self.buf.split(b'\t')?;
-                    let adjusted = &rough[..rough.len() - comma_skip];
+                    let adjusted = if comma_skip == 0 {
+                        rough
+                    } else {
+                        let Some(adjusted) = rough.strip_suffix(b",") else {
+                            return if rough.is_empty() {
+                                Err(BadReply::UnexpectedEnd)
+                            } else {
+                                Err(BadReply::SepNotFound(b','))
+                            };
+                        };
+                        adjusted
+                    };
                     *field = if adjusted == b"NULL" {
                         None
                     } else {
@@ -87,20 +105,35 @@ impl RowSet {
         }
 
         // now we should be looking at the trailing ]
+        if self.buf.peek().len() < 2 {
+            return Err(BadReply::UnexpectedEnd);
+        }
         if !self.buf.peek().starts_with(b"]\n") {
             return Err(BadReply::SepNotFound(b']'));
         }
-        self.buf.consume(2);
+        self.buf.consume(2)?;
         Ok(true)
     }
 
-    pub fn finish(mut self) -> ReplyBuf {
-        if let Some(idx) = self.buf.find_line(b'&') {
-            self.buf.consume(idx);
-        } else {
-            self.buf.consume(self.buf.peek().len());
+    fn consume_field_separator(buf: &mut ReplyBuf, comma: bool) -> RResult<()> {
+        let expected: &[u8] = if comma { b",\t" } else { b"\t" };
+        if buf.peek().len() < expected.len() {
+            return Err(BadReply::UnexpectedEnd);
         }
-        self.buf
+        if !buf.peek().starts_with(expected) {
+            return Err(BadReply::SepNotFound(if comma { b',' } else { b'\t' }));
+        }
+        buf.consume(expected.len())?;
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> RResult<ReplyBuf> {
+        if let Some(idx) = self.buf.find_line(b'&') {
+            self.buf.consume(idx)?;
+        } else {
+            self.buf.consume(self.buf.peek().len())?;
+        }
+        Ok(self.buf)
     }
 
     pub fn get_field_raw(&self, idx: usize) -> Option<&[u8]> {
@@ -167,6 +200,20 @@ fn test_rowset_quoted() {
 
     assert_eq!(rs.get_str(0), Some(r##"mon"etdb"##));
     assert_eq!(rs.get_str(1), None);
+}
+
+#[test]
+fn malformed_rows_return_errors_instead_of_panicking() {
+    let cases = [
+        ("[", 1, BadReply::UnexpectedEnd),
+        ("[ \t]\n", 2, BadReply::UnexpectedEnd),
+        ("[ \"value\"", 1, BadReply::UnexpectedEnd),
+    ];
+
+    for (input, columns, expected) in cases {
+        let mut row_set = RowSet::new(ReplyBuf::new(input.into()), columns);
+        assert_eq!(row_set.advance(), Err(expected), "input {input:?}");
+    }
 }
 
 #[test]
@@ -258,24 +305,24 @@ fn test_finish() {
     assert_eq!(rs.advance(), Ok(true));
     assert_eq!(rs.get_str(0), Some("5"));
     assert_eq!(rs.get_str(1), Some("6"));
-    let buf = rs.finish();
+    let buf = rs.finish().unwrap();
     assert_eq!(BStr::new(buf.peek()), BStr::new("&lalala\n"));
 
     // .finish() works after we've consumed only two rows
     let mut rs = RowSet::new(ReplyBuf::new(testdata.into()), 2);
     assert_eq!(rs.advance(), Ok(true));
     assert_eq!(rs.advance(), Ok(true));
-    let buf = rs.finish();
+    let buf = rs.finish().unwrap();
     assert_eq!(BStr::new(buf.peek()), BStr::new("&lalala\n"));
 
     // .finish() works after we've consumed only one rows
     let mut rs = RowSet::new(ReplyBuf::new(testdata.into()), 2);
     assert_eq!(rs.advance(), Ok(true));
-    let buf = rs.finish();
+    let buf = rs.finish().unwrap();
     assert_eq!(BStr::new(buf.peek()), BStr::new("&lalala\n"));
 
     // .finish() works after we've consumed no rows at all
     let rs = RowSet::new(ReplyBuf::new(testdata.into()), 2);
-    let buf = rs.finish();
+    let buf = rs.finish().unwrap();
     assert_eq!(BStr::new(buf.peek()), BStr::new("&lalala\n"));
 }

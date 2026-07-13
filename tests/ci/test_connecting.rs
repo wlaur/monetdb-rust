@@ -24,7 +24,7 @@ fn test_connect() -> AResult<()> {
 fn test_metadata() -> AResult<()> {
     let ctx = get_server();
     let parms: Parameters = ctx.parms();
-    let mut conn = Connection::new(parms)?;
+    let conn = Connection::new(parms)?;
     let metadata = conn.metadata()?;
     let version = metadata.version();
     assert!(version >= (11, 3, 3));
@@ -42,7 +42,7 @@ fn test_hashed_password() -> AResult<()> {
     let password = parms.get_str(Parm::Password)?.to_string();
 
     // connect to learn hash algorithm used by server
-    let mut conn = Connection::new(parms.clone())?;
+    let conn = Connection::new(parms.clone())?;
     let metadata = conn.metadata()?;
     conn.close();
 

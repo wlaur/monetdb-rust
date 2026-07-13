@@ -61,25 +61,32 @@ impl error::Error for FramingError {}
 
 #[derive(Debug, Clone)]
 pub struct ServerState {
-    pub initial_auto_commit: bool,
+    pub autocommit: bool,
     pub reply_size: usize,
     pub time_zone_seconds: i32,
     pub sql_metadata: Option<Arc<InnerServerMetadata>>,
     pub prehash_algo: &'static str,
     pub server_endian: Endian,
     pub binary_level: u16,
+    pub max_response_size: usize,
 }
 
 impl ServerState {
-    fn new(prehash_algo: &'static str, server_endian: Endian, binary_level: u16) -> Self {
+    fn new(
+        prehash_algo: &'static str,
+        server_endian: Endian,
+        binary_level: u16,
+        max_response_size: usize,
+    ) -> Self {
         Self {
-            initial_auto_commit: true,
+            autocommit: true,
             reply_size: 100,
             time_zone_seconds: 0,
             sql_metadata: None,
             prehash_algo,
             server_endian,
             binary_level,
+            max_response_size,
         }
     }
 }
@@ -115,7 +122,13 @@ impl io::Read for ServerSock {
         }
         if self.read_position == self.read_buffer.len() {
             self.read_buffer.resize(READ_BUFFER_SIZE, 0);
-            let read = self.inner.read(&mut self.read_buffer)?;
+            let read = match self.inner.read(&mut self.read_buffer) {
+                Ok(read) => read,
+                Err(error) => {
+                    self.read_buffer.truncate(self.read_position);
+                    return Err(error);
+                }
+            };
             self.read_buffer.truncate(read);
             self.read_position = 0;
         }
@@ -178,6 +191,34 @@ mod tests {
 
     impl ServerSockTrait for CountingSock {}
 
+    #[derive(Debug)]
+    struct InterruptedOnceSock {
+        data: Cursor<Vec<u8>>,
+        interrupted: bool,
+    }
+
+    impl Read for InterruptedOnceSock {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            self.data.read(buf)
+        }
+    }
+
+    impl Write for InterruptedOnceSock {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl ServerSockTrait for InterruptedOnceSock {}
+
     #[test]
     fn read_ahead_preserves_the_next_message() {
         let mut data = Vec::new();
@@ -199,5 +240,19 @@ mod tests {
         assert_eq!(first, b"one");
         assert_eq!(second, b"two");
         assert_eq!(reads.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn interrupted_read_does_not_expose_buffer_capacity_as_data() {
+        let raw = InterruptedOnceSock {
+            data: Cursor::new(b"actual wire data".to_vec()),
+            interrupted: false,
+        };
+        let mut sock = ServerSock::new(raw);
+        let mut output = Vec::new();
+
+        sock.read_to_end(&mut output).unwrap();
+
+        assert_eq!(output, b"actual wire data");
     }
 }

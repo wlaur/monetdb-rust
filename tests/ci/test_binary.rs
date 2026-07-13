@@ -66,6 +66,29 @@ fn test_binary_result_window_and_server_info() -> Result<()> {
 }
 
 #[test]
+fn test_binary_payload_cannot_change_cached_autocommit() -> Result<()> {
+    let mut parameters = get_server().parms();
+    parameters.set_replysize(1)?;
+    let connection = monetdb::Connection::new(parameters)?;
+    if connection.server_info()?.binary_level < 1 {
+        return Ok(());
+    }
+
+    let mut cursor = connection.cursor();
+    cursor.execute("SELECT s FROM (VALUES (1, 'safe'), (2, '\n&4 f')) AS t(i, s) ORDER BY i")?;
+    let mut frame = Vec::new();
+    cursor.fetch_binary_into(1, 1, &mut frame)?;
+
+    assert!(
+        frame.windows(4).any(|window| window == b"&4 f"),
+        "frame did not contain marker: {:?}",
+        String::from_utf8_lossy(&frame)
+    );
+    assert!(connection.server_info()?.autocommit);
+    Ok(())
+}
+
+#[test]
 fn test_inline_result_reports_not_resident() -> Result<()> {
     let mut parameters = get_server().parms();
     parameters.set_replysize(1)?;
@@ -165,7 +188,7 @@ fn test_failed_delayed_deallocate_preserves_connection() -> Result<()> {
 
 #[test]
 fn test_binary_uploads() -> Result<()> {
-    let mut connection = get_server().connect()?;
+    let connection = get_server().connect()?;
     if connection.metadata()?.version() < (11, 41, 0) {
         return Ok(());
     }
@@ -204,7 +227,7 @@ fn test_binary_uploads() -> Result<()> {
 
 #[test]
 fn test_lazy_binary_uploads() -> Result<()> {
-    let mut connection = get_server().connect()?;
+    let connection = get_server().connect()?;
     if connection.metadata()?.version() < (11, 41, 0) {
         return Ok(());
     }
@@ -244,7 +267,7 @@ fn test_lazy_binary_uploads() -> Result<()> {
 
 #[test]
 fn test_empty_binary_upload_preserves_connection() -> Result<()> {
-    let mut connection = get_server().connect()?;
+    let connection = get_server().connect()?;
     if connection.metadata()?.version() < (11, 41, 0) {
         return Ok(());
     }
@@ -268,7 +291,7 @@ fn test_empty_binary_upload_preserves_connection() -> Result<()> {
 
 #[test]
 fn test_refused_binary_upload_preserves_connection() -> Result<()> {
-    let mut connection = get_server().connect()?;
+    let connection = get_server().connect()?;
     if connection.metadata()?.version() < (11, 41, 0) {
         return Ok(());
     }
@@ -287,10 +310,37 @@ fn test_refused_binary_upload_preserves_connection() -> Result<()> {
         )
         .unwrap_err();
     assert!(error.to_string().contains("intentional refusal"));
+    assert!(error.to_string().contains("server response"));
 
     cursor.execute("SELECT COUNT(*) FROM monetdb_rust_refused_binary_upload")?;
     assert!(cursor.next_row()?);
     assert_eq!(cursor.get_i64(0)?, Some(0));
     cursor.execute("DROP TABLE monetdb_rust_refused_binary_upload")?;
+    Ok(())
+}
+
+#[test]
+fn test_server_abort_during_binary_upload_preserves_connection() -> Result<()> {
+    let connection = get_server().connect()?;
+    if connection.metadata()?.version() < (11, 41, 0) {
+        return Ok(());
+    }
+    let mut cursor = connection.cursor();
+    cursor.execute("DROP TABLE IF EXISTS monetdb_rust_aborted_binary_upload")?;
+    cursor.execute("CREATE TABLE monetdb_rust_aborted_binary_upload(i INT)")?;
+
+    let uploads = HashMap::from([("c0".into(), vec![0; 3])]);
+    let error = cursor
+        .execute_with_binary_uploads(
+            "COPY LITTLE ENDIAN BINARY INTO monetdb_rust_aborted_binary_upload FROM 'c0' ON CLIENT",
+            &uploads,
+        )
+        .unwrap_err();
+    assert!(!error.to_string().is_empty());
+
+    cursor.execute("SELECT 42")?;
+    assert!(cursor.next_row()?);
+    assert_eq!(cursor.get_i32(0)?, Some(42));
+    cursor.execute("DROP TABLE monetdb_rust_aborted_binary_upload")?;
     Ok(())
 }

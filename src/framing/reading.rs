@@ -124,6 +124,7 @@ impl<R: Read> Read for MapiReader<R> {
 }
 
 impl<R: Read> MapiReader<R> {
+    #[cfg(test)]
     pub fn to_end(rd: R, buffer: &mut Vec<u8>) -> io::Result<R> {
         let mut reader = Self::new(rd);
         reader.read_to_end(buffer)?;
