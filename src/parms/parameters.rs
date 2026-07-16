@@ -562,6 +562,9 @@ impl Parameters {
     ///
     /// Primitive on which all setters and [`Parameters::take`] are based.
     pub fn replace(&mut self, parm: Parm, value: impl Into<Value>) -> ParmResult<Value> {
+        let mut value: Value = value.into();
+        value.verify_assign(parm)?;
+
         match parm {
             Parm::User => self.user_changed = true,
             Parm::Password => self.password_changed = true,
@@ -569,8 +572,6 @@ impl Parameters {
             _ => {}
         }
 
-        let mut value: Value = value.into();
-        value.verify_assign(parm)?;
         mem::swap(&mut self.parms[parm.index()], &mut value);
         Ok(value)
     }
@@ -585,6 +586,9 @@ impl Parameters {
     pub fn reset(&mut self, parm: Parm) {
         self.set(parm, THE_DEFAULT_PARAMETERS.get(parm).clone())
             .unwrap();
+        if parm == Parm::Timezone {
+            self.timezone_set = false;
+        }
     }
 
     /// Retrieve the value of a Parm as a [`Value`].
@@ -614,8 +618,13 @@ impl Parameters {
     /// Take the value of the Parm out of this Parameters object, replacing it with its
     /// default value. Can sometimes be used to save an allocation.
     pub fn take(&mut self, parm: Parm) -> Value {
-        self.replace(parm, THE_DEFAULT_PARAMETERS.get(parm).clone())
-            .unwrap()
+        let value = self
+            .replace(parm, THE_DEFAULT_PARAMETERS.get(parm).clone())
+            .unwrap();
+        if parm == Parm::Timezone {
+            self.timezone_set = false;
+        }
+        value
     }
 
     /// Set the value of a Parm which is specified by name, as a `&str` rather
@@ -1285,6 +1294,39 @@ fn validation_rejects_timezone_overflow() {
         parameters.validate(),
         Err(ParmError::InvalidValue(Parm::Timezone))
     ));
+}
+
+#[test]
+fn failed_assignments_and_timezone_resets_do_not_change_parameter_state() {
+    let mut parameters = Parameters::default();
+    parameters.set_password("secret").unwrap();
+    parameters.boundary();
+    assert!(parameters.set(Parm::User, 1_i64).is_err());
+    parameters.boundary();
+    assert_eq!(parameters.get_str(Parm::Password).unwrap(), "secret");
+
+    assert!(parameters.set(Parm::Timezone, "invalid").is_err());
+    assert_eq!(
+        parameters.validate().unwrap().connect_timezone_seconds,
+        None
+    );
+    parameters.set_timezone(60).unwrap();
+    assert_eq!(
+        parameters.validate().unwrap().connect_timezone_seconds,
+        Some(3600)
+    );
+    parameters.reset(Parm::Timezone);
+    assert_eq!(
+        parameters.validate().unwrap().connect_timezone_seconds,
+        None
+    );
+
+    parameters.set_timezone(60).unwrap();
+    assert_eq!(parameters.take(Parm::Timezone), Value::Int(60));
+    assert_eq!(
+        parameters.validate().unwrap().connect_timezone_seconds,
+        None
+    );
 }
 
 #[test]
