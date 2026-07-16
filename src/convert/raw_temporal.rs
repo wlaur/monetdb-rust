@@ -71,7 +71,7 @@ fn test_parse_date() {
 
 impl FromMonet for RawDate {
     fn extract(rs: &ResultSet, colnr: usize) -> CursorResult<Option<Self>> {
-        let Some(mut field) = rs.row_set.get_field_raw(colnr) else {
+        let Some(mut field) = rs.row_set.get_field_raw(colnr)? else {
             return Ok(None);
         };
         let date = RawDate::parse(&mut field)?;
@@ -199,7 +199,7 @@ fn test_parse_time() {
 
 impl FromMonet for RawTime {
     fn extract(rs: &ResultSet, colnr: usize) -> CursorResult<Option<Self>> {
-        let Some(mut field) = rs.row_set.get_field_raw(colnr) else {
+        let Some(mut field) = rs.row_set.get_field_raw(colnr)? else {
             return Ok(None);
         };
         let time = RawTime::parse(&mut field)?;
@@ -248,7 +248,7 @@ fn test_parse_timestamp() {
 
 impl FromMonet for RawTimestamp {
     fn extract(rs: &ResultSet, colnr: usize) -> CursorResult<Option<Self>> {
-        let Some(mut field) = rs.row_set.get_field_raw(colnr) else {
+        let Some(mut field) = rs.row_set.get_field_raw(colnr)? else {
             return Ok(None);
         };
         let timestamp = RawTimestamp::parse(&mut field)?;
@@ -370,7 +370,7 @@ fn test_parse_timetz() {
 
 impl FromMonet for RawTimeTz {
     fn extract(rs: &ResultSet, colnr: usize) -> CursorResult<Option<Self>> {
-        let Some(mut field) = rs.row_set.get_field_raw(colnr) else {
+        let Some(mut field) = rs.row_set.get_field_raw(colnr)? else {
             return Ok(None);
         };
         let timetz = RawTimeTz::parse(&mut field)?;
@@ -442,7 +442,7 @@ fn test_parse_timestamptz() {
 
 impl FromMonet for RawTimestampTz {
     fn extract(rs: &ResultSet, colnr: usize) -> CursorResult<Option<Self>> {
-        let Some(mut field) = rs.row_set.get_field_raw(colnr) else {
+        let Some(mut field) = rs.row_set.get_field_raw(colnr)? else {
             return Ok(None);
         };
         let timestamptz = RawTimestampTz::parse(&mut field)?;

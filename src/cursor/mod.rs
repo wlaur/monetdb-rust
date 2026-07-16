@@ -619,7 +619,7 @@ impl Cursor {
     }
 
     pub fn get_str(&self, colnr: usize) -> CursorResult<Option<&str>> {
-        let Some(field) = self.row_set()?.get_field_raw(colnr) else {
+        let Some(field) = self.row_set()?.get_field_raw(colnr)? else {
             return Ok(None);
         };
         let s = from_utf8(field)?;

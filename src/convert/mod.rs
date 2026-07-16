@@ -13,7 +13,7 @@ macro_rules! fromstr_frommonet {
                 rs: &crate::cursor::replies::ResultSet,
                 colnr: usize,
             ) -> CursorResult<Option<Self>> {
-                let Some(field) = rs.row_set.get_field_raw(colnr) else {
+                let Some(field) = rs.row_set.get_field_raw(colnr)? else {
                     return Ok(None);
                 };
                 crate::convert::transform_fromstr(field)
@@ -82,7 +82,7 @@ fromstr_frommonet!(RawDecimal<u128>);
 /// BLOB
 impl FromMonet for Vec<u8> {
     fn extract(rs: &ResultSet, colnr: usize) -> CursorResult<Option<Self>> {
-        let Some(field) = rs.row_set.get_field_raw(colnr) else {
+        let Some(field) = rs.row_set.get_field_raw(colnr)? else {
             return Ok(None);
         };
         match hex::decode(field) {
@@ -96,7 +96,7 @@ impl FromMonet for Vec<u8> {
 #[cfg(feature = "uuid")]
 impl FromMonet for uuid::Uuid {
     fn extract(rs: &ResultSet, colnr: usize) -> CursorResult<Option<Self>> {
-        let Some(field) = rs.row_set.get_field_raw(colnr) else {
+        let Some(field) = rs.row_set.get_field_raw(colnr)? else {
             return Ok(None);
         };
         match uuid::Uuid::try_parse_ascii(field) {
@@ -110,7 +110,7 @@ impl FromMonet for uuid::Uuid {
 #[cfg(feature = "rust_decimal")]
 impl FromMonet for rust_decimal::Decimal {
     fn extract(rs: &ResultSet, colnr: usize) -> CursorResult<Option<Self>> {
-        let Some(field) = rs.row_set.get_field_raw(colnr) else {
+        let Some(field) = rs.row_set.get_field_raw(colnr)? else {
             return Ok(None);
         };
         transform(field, rust_decimal::Decimal::from_str)
@@ -121,7 +121,7 @@ impl FromMonet for rust_decimal::Decimal {
 #[cfg(feature = "decimal-rs")]
 impl FromMonet for decimal_rs::Decimal {
     fn extract(rs: &ResultSet, colnr: usize) -> CursorResult<Option<Self>> {
-        let Some(field) = rs.row_set.get_field_raw(colnr) else {
+        let Some(field) = rs.row_set.get_field_raw(colnr)? else {
             return Ok(None);
         };
         transform(field, decimal_rs::Decimal::from_str)
