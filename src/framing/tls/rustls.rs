@@ -39,6 +39,7 @@ fn wrap_inner(
     parms: &Validated,
     sock: ServerSock,
 ) -> Result<ServerSock, Box<dyn std::error::Error>> {
+    let control = sock.control();
     let builder = ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]);
     let builder = match parms.connect_tls_verify {
         TlsVerify::System => builder.with_platform_verifier()?,
@@ -75,7 +76,7 @@ fn wrap_inner(
     let stream = StreamOwned::new(client, sock);
     let wrapped = StreamWrapper(stream);
 
-    Ok(ServerSock::new(wrapped))
+    Ok(ServerSock::wrap(wrapped, control))
 }
 
 fn load_certificates(path: &str) -> Result<Vec<CertificateDer<'static>>, io::Error> {

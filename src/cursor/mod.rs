@@ -24,7 +24,7 @@ use crate::conn::Conn;
 use crate::convert::{FromMonet, from_utf8};
 use crate::framing::FramingError;
 use crate::framing::reading::MapiReader;
-use crate::framing::{ServerSock, ServerState};
+use crate::framing::{ServerSock, ServerState, Timeouts};
 use crate::util::ioerror::IoError;
 
 /// An error that occurs while accessing data with a [`Cursor`].
@@ -39,6 +39,15 @@ pub enum CursorError {
     /// An IO Error occurred.
     #[error(transparent)]
     IO(#[from] IoError),
+    /// A configured idle or absolute operation timeout expired.
+    #[error("operation timed out")]
+    Timeout,
+    /// The operation was explicitly cancelled from another thread.
+    #[error("operation was cancelled")]
+    Cancelled,
+    /// Cancellation was requested while no operation was running.
+    #[error("there is no active operation to cancel")]
+    NoActiveOperation,
     #[error(transparent)]
     /// Something went wrong in the communication with the server.
     Framing(#[from] FramingError),
@@ -148,6 +157,7 @@ pub struct Cursor {
     conn: Arc<Conn>,
     replies: ReplyParser,
     reply_size: usize,
+    timeouts: Timeouts,
 }
 
 /// Metadata needed to fetch a result set through `Xexportbin`.
@@ -172,8 +182,24 @@ impl Cursor {
         Cursor {
             replies: ReplyParser::default(),
             reply_size: conn.reply_size,
+            timeouts: conn.timeouts,
             conn,
         }
+    }
+
+    /// Override the connection's idle and absolute timeouts for this cursor.
+    pub fn set_timeouts(&mut self, timeouts: Timeouts) {
+        self.timeouts = timeouts;
+    }
+
+    /// Return the idle and absolute timeouts used by this cursor.
+    pub fn timeouts(&self) -> Timeouts {
+        self.timeouts
+    }
+
+    /// Interrupt the operation currently using this cursor's connection.
+    pub fn cancel(&self) -> CursorResult<()> {
+        self.conn.cancel()
     }
 
     /// Execute the given SQL statements and place the cursor at the first
@@ -303,7 +329,8 @@ impl Cursor {
         vec: &mut Vec<u8>,
         update_autocommit: bool,
     ) -> Result<(), CursorError> {
-        self.conn.run_locked(
+        self.conn.run_locked_with_timeouts(
+            self.timeouts,
             |state: &mut ServerState,
              delayed: &mut DelayedCommands,
              mut sock: ServerSock|
@@ -377,13 +404,14 @@ impl Cursor {
     fn do_close(&mut self) -> CursorResult<()> {
         self.exhaust()?;
         let mut vec = self.replies.take_buffer();
-        self.conn.run_locked(|_state, delayed, mut sock| {
-            if !delayed.responses.is_empty() {
-                sock = delayed.send_delayed(sock)?;
-                sock = delayed.recv_delayed(sock, &mut vec, self.conn.max_response_size)?;
-            }
-            Ok(sock)
-        })
+        self.conn
+            .run_locked_with_timeouts(self.timeouts, |_state, delayed, mut sock| {
+                if !delayed.responses.is_empty() {
+                    sock = delayed.send_delayed(sock)?;
+                    sock = delayed.recv_delayed(sock, &mut vec, self.conn.max_response_size)?;
+                }
+                Ok(sock)
+            })
     }
 
     /// Return information about the columns of the current result set.

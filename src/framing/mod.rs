@@ -12,7 +12,12 @@ pub mod reading;
 pub mod tls;
 pub mod writing;
 
-use std::{error, fmt, io, net::TcpStream, sync::Arc};
+use std::{
+    error, fmt, io,
+    net::{Shutdown, TcpStream},
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
@@ -21,6 +26,174 @@ use crate::{conn::InnerServerMetadata, framing::connecting::Endian};
 
 pub const BLOCKSIZE: usize = 8190;
 const READ_BUFFER_SIZE: usize = 64 * 1024;
+
+/// Idle socket timeouts and the absolute timeout for one post-login operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Timeouts {
+    pub read: Option<Duration>,
+    pub write: Option<Duration>,
+    pub operation: Option<Duration>,
+}
+
+impl Timeouts {
+    pub(crate) fn from_validated(parms: &crate::parms::Validated<'_>) -> Self {
+        Self {
+            read: parms.read_timeout,
+            write: parms.write_timeout,
+            operation: parms.operation_timeout,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ActiveTimeouts {
+    read: Option<Duration>,
+    write: Option<Duration>,
+    deadline: Option<Instant>,
+}
+
+impl ActiveTimeouts {
+    fn new(timeouts: Timeouts) -> Self {
+        Self {
+            read: timeouts.read,
+            write: timeouts.write,
+            deadline: timeouts.operation.map(|timeout| Instant::now() + timeout),
+        }
+    }
+
+    fn for_connection(timeouts: Timeouts, deadline: Option<Instant>) -> Self {
+        Self {
+            read: timeouts.read,
+            write: timeouts.write,
+            deadline,
+        }
+    }
+
+    fn read_limit(self) -> io::Result<Option<Duration>> {
+        self.limit(self.read)
+    }
+
+    fn write_limit(self) -> io::Result<Option<Duration>> {
+        self.limit(self.write)
+    }
+
+    fn limit(self, idle: Option<Duration>) -> io::Result<Option<Duration>> {
+        let remaining = match self.deadline {
+            Some(deadline) => Some(deadline.checked_duration_since(Instant::now()).ok_or_else(
+                || io::Error::new(io::ErrorKind::TimedOut, "operation deadline expired"),
+            )?),
+            None => None,
+        };
+        Ok(match (idle, remaining) {
+            (Some(idle), Some(remaining)) => Some(idle.min(remaining)),
+            (Some(idle), None) => Some(idle),
+            (None, remaining) => remaining,
+        })
+    }
+}
+
+#[derive(Debug)]
+enum RawSocket {
+    Tcp(TcpStream),
+    #[cfg(unix)]
+    Unix(UnixStream),
+    #[cfg(test)]
+    Test,
+}
+
+#[derive(Debug)]
+pub(crate) struct SocketControl {
+    raw: RawSocket,
+    timeouts: Mutex<ActiveTimeouts>,
+}
+
+impl SocketControl {
+    fn new(raw: RawSocket, active: ActiveTimeouts) -> Self {
+        Self {
+            raw,
+            timeouts: Mutex::new(active),
+        }
+    }
+
+    fn start_operation(&self, timeouts: Timeouts) {
+        *self
+            .timeouts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = ActiveTimeouts::new(timeouts);
+    }
+
+    fn set_connection_deadline(&self, timeouts: Timeouts, deadline: Option<Instant>) {
+        *self
+            .timeouts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            ActiveTimeouts::for_connection(timeouts, deadline);
+    }
+
+    fn before_read(&self) -> io::Result<()> {
+        let limit = self
+            .timeouts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .read_limit()?;
+        self.set_read_timeout(limit)
+    }
+
+    fn before_write(&self) -> io::Result<()> {
+        let limit = self
+            .timeouts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .write_limit()?;
+        self.set_write_timeout(limit)
+    }
+
+    fn read_timeout_active(&self) -> bool {
+        let timeouts = self
+            .timeouts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        timeouts.read.is_some() || timeouts.deadline.is_some()
+    }
+
+    fn write_timeout_active(&self) -> bool {
+        let timeouts = self
+            .timeouts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        timeouts.write.is_some() || timeouts.deadline.is_some()
+    }
+
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        match &self.raw {
+            RawSocket::Tcp(socket) => socket.set_read_timeout(timeout),
+            #[cfg(unix)]
+            RawSocket::Unix(socket) => socket.set_read_timeout(timeout),
+            #[cfg(test)]
+            RawSocket::Test => Ok(()),
+        }
+    }
+
+    fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        match &self.raw {
+            RawSocket::Tcp(socket) => socket.set_write_timeout(timeout),
+            #[cfg(unix)]
+            RawSocket::Unix(socket) => socket.set_write_timeout(timeout),
+            #[cfg(test)]
+            RawSocket::Test => Ok(()),
+        }
+    }
+
+    pub(crate) fn shutdown(&self) -> io::Result<()> {
+        match &self.raw {
+            RawSocket::Tcp(socket) => socket.shutdown(Shutdown::Both),
+            #[cfg(unix)]
+            RawSocket::Unix(socket) => socket.shutdown(Shutdown::Both),
+            #[cfg(test)]
+            RawSocket::Test => Ok(()),
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum FramingError {
@@ -91,7 +264,10 @@ impl ServerState {
     }
 }
 
-trait ServerSockTrait: fmt::Debug + io::Read + io::Write + Send + 'static {}
+pub(crate) trait ServerSockTrait:
+    fmt::Debug + io::Read + io::Write + Send + 'static
+{
+}
 
 #[cfg(unix)]
 impl ServerSockTrait for UnixStream {}
@@ -101,17 +277,73 @@ impl ServerSockTrait for TcpStream {}
 #[derive(Debug)]
 pub struct ServerSock {
     inner: Box<dyn ServerSockTrait>,
+    control: Arc<SocketControl>,
     read_buffer: Vec<u8>,
     read_position: usize,
 }
 
 impl ServerSock {
+    #[cfg(test)]
     fn new(sock: impl ServerSockTrait) -> Self {
+        let control = Arc::new(SocketControl::new(
+            RawSocket::Test,
+            ActiveTimeouts::new(Timeouts {
+                read: None,
+                write: None,
+                operation: None,
+            }),
+        ));
+        Self::with_control(sock, control)
+    }
+
+    fn with_control(sock: impl ServerSockTrait, control: Arc<SocketControl>) -> Self {
         ServerSock {
             inner: Box::new(sock),
+            control,
             read_buffer: Vec::with_capacity(READ_BUFFER_SIZE),
             read_position: 0,
         }
+    }
+
+    pub(crate) fn from_tcp(
+        sock: TcpStream,
+        timeouts: Timeouts,
+        deadline: Option<Instant>,
+    ) -> io::Result<Self> {
+        let control = Arc::new(SocketControl::new(
+            RawSocket::Tcp(sock.try_clone()?),
+            ActiveTimeouts::for_connection(timeouts, deadline),
+        ));
+        Ok(Self::with_control(sock, control))
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn from_unix(
+        sock: UnixStream,
+        timeouts: Timeouts,
+        deadline: Option<Instant>,
+    ) -> io::Result<Self> {
+        let control = Arc::new(SocketControl::new(
+            RawSocket::Unix(sock.try_clone()?),
+            ActiveTimeouts::for_connection(timeouts, deadline),
+        ));
+        Ok(Self::with_control(sock, control))
+    }
+
+    pub(crate) fn wrap(sock: impl ServerSockTrait, control: Arc<SocketControl>) -> Self {
+        Self::with_control(sock, control)
+    }
+
+    pub(crate) fn control(&self) -> Arc<SocketControl> {
+        Arc::clone(&self.control)
+    }
+
+    pub(crate) fn start_operation(&self, timeouts: Timeouts) {
+        self.control.start_operation(timeouts);
+    }
+
+    pub(crate) fn set_connection_deadline(&self, timeouts: Timeouts, deadline: Option<Instant>) {
+        self.control.set_connection_deadline(timeouts, deadline);
     }
 }
 
@@ -121,11 +353,17 @@ impl io::Read for ServerSock {
             return Ok(0);
         }
         if self.read_position == self.read_buffer.len() {
+            self.control.before_read()?;
             self.read_buffer.resize(READ_BUFFER_SIZE, 0);
             let read = match self.inner.read(&mut self.read_buffer) {
                 Ok(read) => read,
-                Err(error) => {
+                Err(mut error) => {
                     self.read_buffer.truncate(self.read_position);
+                    if error.kind() == io::ErrorKind::WouldBlock
+                        && self.control.read_timeout_active()
+                    {
+                        error = io::Error::new(io::ErrorKind::TimedOut, error);
+                    }
                     return Err(error);
                 }
             };
@@ -142,14 +380,23 @@ impl io::Read for ServerSock {
 
 impl io::Write for ServerSock {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.inner.write(buf)
+        self.control.before_write()?;
+        self.inner.write(buf).map_err(|error| {
+            if error.kind() == io::ErrorKind::WouldBlock && self.control.write_timeout_active() {
+                io::Error::new(io::ErrorKind::TimedOut, error)
+            } else {
+                error
+            }
+        })
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        self.control.before_write()?;
         self.inner.flush()
     }
 
     fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
+        self.control.before_write()?;
         self.inner.write_vectored(bufs)
     }
 }

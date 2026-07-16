@@ -11,14 +11,14 @@ use std::{
     num::NonZeroUsize,
     sync::{
         Arc, Mutex, TryLockError,
-        atomic::{self, AtomicBool},
+        atomic::{self, AtomicBool, AtomicU8},
     },
 };
 
 use crate::{
     cursor::{Cursor, CursorError, CursorResult, delayed::DelayedCommands},
     framing::{
-        ServerSock, ServerState,
+        ServerSock, ServerState, SocketControl, Timeouts,
         connecting::{ConnectResult, Endian, establish_connection},
         reading::MapiReader,
     },
@@ -34,12 +34,19 @@ use crate::{
 /// can be obtained using the [`cursor()`](`Connection::cursor`) method.
 pub struct Connection(Arc<Conn>);
 
+/// Thread-safe handle that can interrupt the connection's active operation.
+#[derive(Clone)]
+pub struct CancelHandle(Arc<Conn>);
+
 pub(crate) struct Conn {
     pub(crate) reply_size: usize,
     pub(crate) max_response_size: usize,
     locked: Mutex<Locked>,
     pending_closes: Mutex<Vec<u64>>,
     closing: AtomicBool,
+    operation_state: AtomicU8,
+    control: Arc<SocketControl>,
+    pub(crate) timeouts: Timeouts,
 }
 
 struct Locked {
@@ -48,10 +55,14 @@ struct Locked {
     delayed: DelayedCommands,
 }
 
+const OPERATION_IDLE: u8 = 0;
+const OPERATION_ACTIVE: u8 = 1;
+const OPERATION_CANCELLED: u8 = 2;
+
 impl Connection {
     /// Create a new connection based on the given [`Parameters`] object.
     pub fn new(parameters: Parameters) -> ConnectResult<Connection> {
-        let (sock, state, delayed) = establish_connection(parameters)?;
+        let (sock, state, delayed, timeouts) = establish_connection(parameters)?;
 
         let reply_size = state.reply_size;
         let max_response_size = state.max_response_size;
@@ -61,10 +72,14 @@ impl Connection {
             sock: Some(sock),
             delayed,
         };
+        let control = locked.sock.as_ref().expect("socket is present").control();
         let conn = Conn {
             locked: Mutex::new(locked),
             pending_closes: Mutex::new(Vec::new()),
             closing: AtomicBool::new(false),
+            operation_state: AtomicU8::new(OPERATION_IDLE),
+            control,
+            timeouts,
             reply_size,
             max_response_size,
         };
@@ -96,11 +111,26 @@ impl Connection {
     fn close_connection(&mut self) {
         let conn = self.0.as_ref();
         conn.closing.store(true, atomic::Ordering::SeqCst);
+        let _ = conn.control.shutdown();
         match conn.locked.try_lock() {
             Ok(mut locked) => locked.sock = None,
             Err(TryLockError::Poisoned(mut poisoned)) => poisoned.get_mut().sock = None,
             Err(TryLockError::WouldBlock) => {}
         }
+    }
+
+    /// Interrupt the operation currently using this connection.
+    ///
+    /// Cancellation closes the transport because MAPI has no safe
+    /// out-of-band interrupt that preserves a partially read frame.
+    pub fn cancel(&self) -> CursorResult<()> {
+        self.0.cancel()
+    }
+
+    /// Return a handle that can cancel an operation without acquiring the
+    /// connection's operation mutex.
+    pub fn cancel_handle(&self) -> CancelHandle {
+        CancelHandle(Arc::clone(&self.0))
     }
 
     /// Return server environment and version metadata, loading it on first use.
@@ -204,8 +234,26 @@ impl Drop for Connection {
     }
 }
 
+impl CancelHandle {
+    /// Interrupt the operation currently using the connection.
+    pub fn cancel(&self) -> CursorResult<()> {
+        self.0.cancel()
+    }
+}
+
 impl Conn {
     pub(crate) fn run_locked<F>(&self, f: F) -> CursorResult<()>
+    where
+        F: for<'x> FnOnce(
+            &'x mut ServerState,
+            &'x mut DelayedCommands,
+            ServerSock,
+        ) -> CursorResult<ServerSock>,
+    {
+        self.run_locked_with_timeouts(self.timeouts, f)
+    }
+
+    pub(crate) fn run_locked_with_timeouts<F>(&self, timeouts: Timeouts, f: F) -> CursorResult<()>
     where
         F: for<'x> FnOnce(
             &'x mut ServerState,
@@ -221,6 +269,20 @@ impl Conn {
         let Some(sock) = guard.sock.take() else {
             return Err(CursorError::Closed);
         };
+        if self
+            .operation_state
+            .compare_exchange(
+                OPERATION_IDLE,
+                OPERATION_ACTIVE,
+                atomic::Ordering::AcqRel,
+                atomic::Ordering::Acquire,
+            )
+            .is_err()
+        {
+            self.closing.store(true, atomic::Ordering::Release);
+            return Err(CursorError::Poisoned);
+        }
+        sock.start_operation(timeouts);
         let pending_closes = match self.pending_closes.lock() {
             Ok(mut pending) => std::mem::take(&mut *pending),
             Err(poisoned) => {
@@ -233,6 +295,13 @@ impl Conn {
             delayed.add_xcommand_cleanup("close", result_id);
         }
         let result = f(state, delayed, sock);
+        let operation_state = self
+            .operation_state
+            .swap(OPERATION_IDLE, atomic::Ordering::AcqRel);
+        if operation_state == OPERATION_CANCELLED {
+            self.closing.store(true, atomic::Ordering::Release);
+            return Err(CursorError::Cancelled);
+        }
         match result {
             Ok(sock) => {
                 if self.closing.load(atomic::Ordering::Acquire) {
@@ -242,8 +311,25 @@ impl Conn {
                 guard.sock = Some(sock);
                 Ok(())
             }
+            Err(CursorError::IO(error)) if error.kind() == std::io::ErrorKind::TimedOut => {
+                self.closing.store(true, atomic::Ordering::Release);
+                Err(CursorError::Timeout)
+            }
             Err(e) => Err(e),
         }
+    }
+
+    pub(crate) fn cancel(&self) -> CursorResult<()> {
+        self.operation_state
+            .compare_exchange(
+                OPERATION_ACTIVE,
+                OPERATION_CANCELLED,
+                atomic::Ordering::AcqRel,
+                atomic::Ordering::Acquire,
+            )
+            .map_err(|_| CursorError::NoActiveOperation)?;
+        let _ = self.control.shutdown();
+        Ok(())
     }
 
     pub(crate) fn try_queue_closes(&self, result_ids: &[u64]) {
@@ -355,5 +441,125 @@ impl ServerMetadata {
 
     pub fn password_prehash_algo(&self) -> &str {
         self.0.prehash_algo
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::{Read, Write},
+        net::{TcpListener, TcpStream},
+        sync::mpsc,
+        thread,
+        time::Duration,
+    };
+
+    use super::*;
+
+    fn write_message(stream: &mut TcpStream, message: &[u8]) {
+        let header = (((message.len() as u16) << 1) | 1).to_le_bytes();
+        stream.write_all(&header).unwrap();
+        stream.write_all(message).unwrap();
+    }
+
+    fn read_message(stream: &mut TcpStream) -> Vec<u8> {
+        let mut message = Vec::new();
+        loop {
+            let mut header = [0; 2];
+            stream.read_exact(&mut header).unwrap();
+            let header = u16::from_le_bytes(header);
+            let length = usize::from(header >> 1);
+            let start = message.len();
+            message.resize(start + length, 0);
+            stream.read_exact(&mut message[start..]).unwrap();
+            if header & 1 != 0 {
+                return message;
+            }
+        }
+    }
+
+    fn black_hole_query_server() -> (u16, mpsc::Receiver<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (query_sender, query_receiver) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut nuls = [0; 8];
+            stream.read_exact(&mut nuls).unwrap();
+            assert_eq!(nuls, [0; 8]);
+            write_message(
+                &mut stream,
+                b"salt:mserver:9:SHA512:LIT:SHA512:sql=9:BINARY=1:",
+            );
+            let _response = read_message(&mut stream);
+            write_message(&mut stream, b"=OK");
+            let _query = read_message(&mut stream);
+            query_sender.send(()).unwrap();
+            let mut byte = [0];
+            let _ = stream.read(&mut byte);
+        });
+        (port, query_receiver)
+    }
+
+    #[test]
+    fn cancellation_interrupts_a_locked_network_read_and_closes_the_connection() {
+        let (port, query_received) = black_hole_query_server();
+        let mut parameters = Parameters::default();
+        parameters.set_host("127.0.0.1").unwrap();
+        parameters.set_port(port).unwrap();
+        parameters.set_client_info("false").unwrap();
+        parameters.set_connect_timeout(2).unwrap();
+        parameters.set_operation_timeout(5).unwrap();
+        let connection = Connection::new(parameters).unwrap();
+        let cancel = connection.cancel_handle();
+        assert_eq!(cancel.cancel(), Err(CursorError::NoActiveOperation));
+
+        let (result_sender, result_receiver) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let mut cursor = connection.cursor();
+            let result = cursor.execute("SELECT 1");
+            let after_cancel = connection.cursor().execute("SELECT 2");
+            result_sender.send((result, after_cancel)).unwrap();
+        });
+        query_received
+            .recv_timeout(Duration::from_secs(2))
+            .expect("query did not reach the server");
+        cancel.cancel().unwrap();
+        let (result, after_cancel) = result_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("cancelled query did not return");
+        assert_eq!(result, Err(CursorError::Cancelled));
+        assert_eq!(after_cancel, Err(CursorError::Closed));
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn idle_read_timeout_closes_a_black_holed_connection() {
+        let (port, query_received) = black_hole_query_server();
+        let mut parameters = Parameters::default();
+        parameters.set_host("127.0.0.1").unwrap();
+        parameters.set_port(port).unwrap();
+        parameters.set_client_info("false").unwrap();
+        parameters.set_connect_timeout(2).unwrap();
+        parameters.set_read_timeout(1).unwrap();
+        parameters.set_operation_timeout(0).unwrap();
+        let connection = Connection::new(parameters).unwrap();
+
+        let (result_sender, result_receiver) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let mut cursor = connection.cursor();
+            let result = cursor.execute("SELECT 1");
+            let after_timeout = connection.cursor().execute("SELECT 2");
+            result_sender.send((result, after_timeout)).unwrap();
+        });
+        query_received
+            .recv_timeout(Duration::from_secs(2))
+            .expect("query did not reach the server");
+        let (result, after_timeout) = result_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("timed out query did not return");
+        assert_eq!(result, Err(CursorError::Timeout));
+        assert_eq!(after_timeout, Err(CursorError::Closed));
+        worker.join().unwrap();
     }
 }
