@@ -282,7 +282,13 @@ pub fn url_from_parms(
     if port.is_some() && host.is_empty() {
         host = "localhost";
     }
-    percent_encode(&mut url, host);
+    if host.parse::<std::net::Ipv6Addr>().is_ok() {
+        url.push('[');
+        url.push_str(host);
+        url.push(']');
+    } else {
+        percent_encode(&mut url, host);
+    }
     if let Some(p) = port {
         write!(url, ":{p}").unwrap();
     }
@@ -319,4 +325,16 @@ pub fn url_from_parms(
     }
 
     Ok(url)
+}
+
+#[test]
+fn generated_urls_preserve_ipv6_hosts() {
+    let mut parameters = Parameters::default();
+    parameters.set_host("2001:db8::1").unwrap();
+    parameters.set_database("database").unwrap();
+
+    let url = parameters.url_without_credentials().unwrap();
+    assert_eq!(url, "monetdb://[2001:db8::1]/database");
+    let parsed = Parameters::from_url(&url).unwrap();
+    assert_eq!(parsed.get_str(Parm::Host).unwrap(), "2001:db8::1");
 }
