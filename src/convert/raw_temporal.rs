@@ -6,11 +6,9 @@
 //
 // Copyright 2024 MonetDB Foundation
 
-use std::ops::Sub;
-
 use atoi::FromRadix10Checked;
 use bstr::BStr;
-use num::Zero;
+use num::{CheckedAdd, CheckedMul, CheckedSub, Zero};
 
 use crate::{CursorResult, cursor::replies::ResultSet};
 
@@ -71,7 +69,7 @@ fn test_parse_date() {
 
 impl FromMonet for RawDate {
     fn extract(rs: &ResultSet, colnr: usize) -> CursorResult<Option<Self>> {
-        let Some(mut field) = rs.row_set.get_field_raw(colnr) else {
+        let Some(mut field) = rs.row_set.get_field_raw(colnr)? else {
             return Ok(None);
         };
         let date = RawDate::parse(&mut field)?;
@@ -199,7 +197,7 @@ fn test_parse_time() {
 
 impl FromMonet for RawTime {
     fn extract(rs: &ResultSet, colnr: usize) -> CursorResult<Option<Self>> {
-        let Some(mut field) = rs.row_set.get_field_raw(colnr) else {
+        let Some(mut field) = rs.row_set.get_field_raw(colnr)? else {
             return Ok(None);
         };
         let time = RawTime::parse(&mut field)?;
@@ -248,7 +246,7 @@ fn test_parse_timestamp() {
 
 impl FromMonet for RawTimestamp {
     fn extract(rs: &ResultSet, colnr: usize) -> CursorResult<Option<Self>> {
-        let Some(mut field) = rs.row_set.get_field_raw(colnr) else {
+        let Some(mut field) = rs.row_set.get_field_raw(colnr)? else {
             return Ok(None);
         };
         let timestamp = RawTimestamp::parse(&mut field)?;
@@ -370,7 +368,7 @@ fn test_parse_timetz() {
 
 impl FromMonet for RawTimeTz {
     fn extract(rs: &ResultSet, colnr: usize) -> CursorResult<Option<Self>> {
-        let Some(mut field) = rs.row_set.get_field_raw(colnr) else {
+        let Some(mut field) = rs.row_set.get_field_raw(colnr)? else {
             return Ok(None);
         };
         let timetz = RawTimeTz::parse(&mut field)?;
@@ -442,7 +440,7 @@ fn test_parse_timestamptz() {
 
 impl FromMonet for RawTimestampTz {
     fn extract(rs: &ResultSet, colnr: usize) -> CursorResult<Option<Self>> {
-        let Some(mut field) = rs.row_set.get_field_raw(colnr) else {
+        let Some(mut field) = rs.row_set.get_field_raw(colnr)? else {
             return Ok(None);
         };
         let timestamptz = RawTimestampTz::parse(&mut field)?;
@@ -484,17 +482,48 @@ fn test_take_unsigned() {
 fn take_signed<V, T>(data: &mut &[u8]) -> CursorResult<V>
 where
     T: 'static,
-    V: FromRadix10Checked,
-    V: Sub<Output = V> + Zero,
+    V: CheckedAdd + CheckedMul + CheckedSub + TryFrom<u8> + Zero,
 {
-    if let Some(mut digits) = data.strip_prefix(b"-") {
-        let value = take_unsigned::<V, T>(&mut digits)?;
-        *data = digits;
-        let negated = V::zero() - value;
-        Ok(negated)
-    } else {
-        take_unsigned::<V, T>(data)
+    let (negative, digits) = match data.strip_prefix(b"-") {
+        Some(digits) => (true, digits),
+        None => (false, *data),
+    };
+    let mut value = V::zero();
+    let Ok(ten) = V::try_from(10) else {
+        return Err(conversion_error::<T>("integer type cannot represent 10"));
+    };
+    let mut count = 0;
+    for &digit in digits {
+        if !digit.is_ascii_digit() {
+            break;
+        }
+        let Ok(digit) = V::try_from(digit - b'0') else {
+            return Err(conversion_error::<T>(
+                "integer type cannot represent a decimal digit",
+            ));
+        };
+        let Some(multiplied) = value.checked_mul(&ten) else {
+            break;
+        };
+        let next = if negative {
+            multiplied.checked_sub(&digit)
+        } else {
+            multiplied.checked_add(&digit)
+        };
+        let Some(next) = next else {
+            break;
+        };
+        value = next;
+        count += 1;
     }
+    if count == 0 || digits.get(count).is_some_and(u8::is_ascii_digit) {
+        return Err(conversion_error::<T>(format_args!(
+            "invalid integer {:?}",
+            BStr::new(data)
+        )));
+    }
+    *data = &digits[count..];
+    Ok(value)
 }
 
 #[test]
@@ -505,6 +534,10 @@ fn test_take_signed() {
 
     let s = &mut b"-123".as_slice();
     assert_eq!(take_signed::<i16, i16>(s), Ok(-123i16));
+    assert_eq!(*s, b"");
+
+    let s = &mut b"-32768".as_slice();
+    assert_eq!(take_signed::<i16, i16>(s), Ok(i16::MIN));
     assert_eq!(*s, b"");
 
     let s = &mut b"".as_slice();

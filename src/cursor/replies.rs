@@ -35,6 +35,8 @@ pub enum BadReply {
     TooFewColumns(usize),
     #[error("result header includes {included} rows but reports only {total} total rows")]
     TooManyIncludedRows { included: u64, total: u64 },
+    #[error("result contains more rows than its reported total of {total}")]
+    TooManyRows { total: u64 },
     #[error("invalid backslash escape in result set")]
     InvalidBackslashEscape,
     #[error("column index {0} out of bounds, have only {1} columns")]
@@ -51,15 +53,28 @@ pub(crate) fn response_autocommit(response: &[u8]) -> Option<bool> {
     response
         .split(|byte| *byte == b'\n')
         .filter_map(|line| {
-            if line.starts_with(b"&4 f") {
+            if line == b"&4 f" {
                 Some(false)
-            } else if line.starts_with(b"&4 t") {
+            } else if line == b"&4 t" {
                 Some(true)
             } else {
                 None
             }
         })
         .next_back()
+}
+
+pub(crate) fn server_error_message(response: &[u8]) -> Option<String> {
+    let mut messages = response
+        .split(|byte| *byte == b'\n')
+        .filter_map(|line| line.strip_prefix(b"!"));
+    let first = messages.next()?;
+    let mut result = String::from_utf8_lossy(first).into_owned();
+    for message in messages {
+        result.push('\n');
+        result.push_str(&String::from_utf8_lossy(message));
+    }
+    Some(result)
 }
 
 #[derive(Debug)]
@@ -332,7 +347,7 @@ impl ReplyParser {
             ReplyParser::Success { affected, .. } => *affected,
             ReplyParser::Data(ResultSet {
                 total_rows: nrows, ..
-            }) => Some(*nrows as i64),
+            }) => i64::try_from(*nrows).ok(),
             _ => None,
         }
     }
@@ -369,24 +384,10 @@ impl ReplyParser {
     }
 
     pub fn detect_errors(response: &[u8]) -> CursorResult<()> {
-        let start = if response.is_empty() {
-            return Ok(());
-        } else if response[0] == b'!' {
-            1
-        } else if let Some(pos) = memmem::find(response, b"\n!") {
-            pos + 1
-        } else {
-            return Ok(());
-        };
-
-        let mut bytes = &response[start..];
-        if let Some(idx) = bytes.find_byte(b'\n') {
-            bytes = &bytes[..idx];
+        match server_error_message(response) {
+            Some(message) => Err(CursorError::Server(message)),
+            None => Ok(()),
         }
-        let message = std::str::from_utf8(bytes)
-            .unwrap_or("server sent an error message but it can't be decoded");
-
-        Err(CursorError::Server(message.to_string()))
     }
 
     fn parse(buf: ReplyBuf) -> RResult<ReplyParser> {
@@ -456,9 +457,9 @@ impl ReplyParser {
 
     fn parse_autocommit_status(mut buf: ReplyBuf) -> RResult<ReplyParser> {
         let line = buf.split_str(b'\n', "header line")?.trim_ascii();
-        let auto_commit = if line.starts_with("&4 f") {
+        let auto_commit = if line == "&4 f" {
             false
-        } else if line.starts_with("&4 t") {
+        } else if line == "&4 t" {
             true
         } else {
             return Err(BadReply::InvalidHeader(format!(
@@ -652,13 +653,24 @@ pub fn from_utf8<'a>(context: &'static str, bytes: &'a [u8]) -> RResult<&'a str>
 
 #[cfg(test)]
 mod tests {
-    use super::{BadReply, ReplyParser, ResultSet, response_autocommit};
+    use super::{BadReply, ReplyParser, ResultSet, response_autocommit, server_error_message};
 
     #[test]
     fn extracts_last_autocommit_status() {
         assert_eq!(response_autocommit(b"&4 f\n"), Some(false));
         assert_eq!(response_autocommit(b"&4 f\n&4 t\n"), Some(true));
         assert_eq!(response_autocommit(b"[ \"&4 f\"\t]\n"), None);
+        assert_eq!(response_autocommit(b"&4 false\n"), None);
+        assert!(ReplyParser::new(b"&4 false\n".to_vec()).is_err());
+    }
+
+    #[test]
+    fn preserves_all_server_error_lines() {
+        let response = b"&2 0\n!42000!syntax error\n!detail from optimizer\n&4 f\n";
+        assert_eq!(
+            server_error_message(response).as_deref(),
+            Some("42000!syntax error\ndetail from optimizer")
+        );
     }
 
     #[test]
@@ -721,6 +733,22 @@ mod tests {
                 total: 1
             })
         ));
+    }
+
+    #[test]
+    fn affected_rows_does_not_wrap_large_server_counts() {
+        let parser = ReplyParser::Data(ResultSet {
+            result_id: 1,
+            prepared: false,
+            next_row: 0,
+            total_rows: u64::MAX,
+            rows_included: 0,
+            columns: Vec::new(),
+            row_set: super::RowSet::new(super::ReplyBuf::new(Vec::new()), 0),
+            stashed: None,
+            to_close: Some(1),
+        });
+        assert_eq!(parser.affected_rows(), None);
     }
 
     #[test]

@@ -6,9 +6,9 @@
 //
 // Copyright 2024 MonetDB Foundation
 
-use std::{any::type_name, ops::Sub, str::FromStr};
+use std::{any::type_name, str::FromStr};
 
-use num::{CheckedAdd, CheckedMul};
+use num::{CheckedAdd, CheckedMul, CheckedSub};
 
 /// Representation of a Decimal value from Monet.
 /// `RawDecimal(n, s)` ist to be interpreted as `n * 10^(-s)`.
@@ -28,22 +28,31 @@ pub enum InvalidDecimal {
 impl<T> RawDecimal<T> {
     pub(crate) fn parse_signed(digits: &[u8]) -> Result<(RawDecimal<T>, &[u8]), InvalidDecimal>
     where
-        T: CheckedAdd + CheckedMul + Sub<Output = T> + TryFrom<u8>,
+        T: CheckedAdd + CheckedMul + CheckedSub + TryFrom<u8>,
     {
         if let Some(digits) = digits.strip_prefix(b"-") {
-            let (RawDecimal(value, scale), rest) = Self::parse_unsigned(digits)?;
-            let negated = Self::small_constant(0) - value;
-            Ok((RawDecimal(negated, scale), rest))
+            Self::parse_digits(digits, |acc, digit| {
+                acc.checked_mul(&Self::small_constant(10u8))?
+                    .checked_sub(&Self::small_constant(digit))
+            })
         } else {
             Self::parse_unsigned(digits)
         }
     }
 
-    pub(crate) fn parse_unsigned(
-        mut digits: &[u8],
-    ) -> Result<(RawDecimal<T>, &[u8]), InvalidDecimal>
+    pub(crate) fn parse_unsigned(digits: &[u8]) -> Result<(RawDecimal<T>, &[u8]), InvalidDecimal>
     where
         T: CheckedAdd + CheckedMul + TryFrom<u8>,
+    {
+        Self::parse_digits(digits, Self::multiply_accumulate)
+    }
+
+    fn parse_digits(
+        mut digits: &[u8],
+        mut accumulate: impl FnMut(T, u8) -> Option<T>,
+    ) -> Result<(RawDecimal<T>, &[u8]), InvalidDecimal>
+    where
+        T: TryFrom<u8>,
     {
         let orig_digits = digits;
 
@@ -52,7 +61,7 @@ impl<T> RawDecimal<T> {
         let mut acc = Self::small_constant(0);
         while let [d, rest @ ..] = digits {
             match d {
-                b'0'..=b'9' => match Self::multiply_accumulate(acc, d - b'0') {
+                b'0'..=b'9' => match accumulate(acc, d - b'0') {
                     Some(new) => {
                         acc = new;
                         scale = u8::checked_add(scale, 1).ok_or(InvalidDecimal::OutOfRange)?;
@@ -252,6 +261,26 @@ fn test_fromstr_no_period() {
     let expected = Ok(RawDecimal(-123, 0));
     let actual = "-123".parse::<RawDecimal<i32>>();
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn test_fromstr_accepts_signed_minimum() {
+    assert_eq!(
+        RawDecimal::<i8>::from_str("-128"),
+        Ok(RawDecimal(i8::MIN, 0))
+    );
+    assert_eq!(
+        RawDecimal::<i16>::from_str("-32768"),
+        Ok(RawDecimal(i16::MIN, 0))
+    );
+    assert_eq!(
+        RawDecimal::<i128>::from_str(&i128::MIN.to_string()),
+        Ok(RawDecimal(i128::MIN, 0))
+    );
+    assert_eq!(
+        RawDecimal::<i8>::from_str("128"),
+        Err(InvalidDecimal::OutOfRange)
+    );
 }
 
 #[test]

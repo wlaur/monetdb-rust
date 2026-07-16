@@ -33,6 +33,19 @@ fn test_metadata() -> AResult<()> {
 }
 
 #[test]
+fn test_configured_schema() -> AResult<()> {
+    let ctx = get_server();
+    let mut parms: Parameters = ctx.parms();
+    parms.set_schema("sys")?;
+    let conn = Connection::new(parms)?;
+    let mut cursor = conn.cursor();
+    cursor.execute("SELECT current_schema")?;
+    assert!(cursor.next_row()?);
+    assert_eq!(cursor.get_str(0)?, Some("sys"));
+    Ok(())
+}
+
+#[test]
 fn test_hashed_password() -> AResult<()> {
     let ctx = get_server();
     let mut parms: Parameters = ctx.parms();

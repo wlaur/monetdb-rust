@@ -136,23 +136,29 @@ impl RowSet {
         Ok(self.buf)
     }
 
-    pub fn get_field_raw(&self, idx: usize) -> Option<&[u8]> {
-        // index out of bounds -> None
-        let field = *self.fields.get(idx)?;
+    pub fn get_field_raw(&self, idx: usize) -> RResult<Option<&[u8]>> {
+        let field = *self
+            .fields
+            .get(idx)
+            .ok_or(BadReply::ColumnIndexOutOfBounds(idx, self.fields.len()))?;
         // NULL -> None
-        let field = field?;
+        let Some(field) = field else {
+            return Ok(None);
+        };
         // SAFETY: `advance` records only pointers and lengths into `buf`'s stable
         // allocation. Access requires borrowing this RowSet, and no method can
         // mutate or replace the allocation through that shared borrow.
         let slice = unsafe { std::slice::from_raw_parts(field.0, field.1) };
-        Some(slice)
+        Ok(Some(slice))
     }
 
     #[cfg(test)]
-    fn get_str(&self, idx: usize) -> Option<&str> {
-        let bytes = self.get_field_raw(idx)?;
+    fn get_str(&self, idx: usize) -> RResult<Option<&str>> {
+        let Some(bytes) = self.get_field_raw(idx)? else {
+            return Ok(None);
+        };
         let str = std::str::from_utf8(bytes).unwrap();
-        Some(str)
+        Ok(Some(str))
     }
 }
 
@@ -161,18 +167,18 @@ fn test_rowset_unquoted() {
     let testdata = "[ 11,\tNULL,\t33\t]\n";
     let mut rs = RowSet::new(ReplyBuf::new(testdata.into()), 3);
 
-    assert_eq!(rs.get_str(0), None);
-    assert_eq!(rs.get_str(1), None);
-    assert_eq!(rs.get_str(2), None);
-    assert_eq!(rs.get_str(3), None);
+    assert_eq!(rs.get_str(0), Ok(None));
+    assert_eq!(rs.get_str(1), Ok(None));
+    assert_eq!(rs.get_str(2), Ok(None));
+    assert_eq!(rs.get_str(3), Err(BadReply::ColumnIndexOutOfBounds(3, 3)));
 
     let have_row = rs.advance().unwrap();
     assert!(have_row);
 
-    assert_eq!(rs.get_str(0), Some("11"));
-    assert_eq!(rs.get_str(1), None); // was NULL
-    assert_eq!(rs.get_str(2), Some("33"));
-    assert_eq!(rs.get_str(3), None);
+    assert_eq!(rs.get_str(0), Ok(Some("11")));
+    assert_eq!(rs.get_str(1), Ok(None)); // was NULL
+    assert_eq!(rs.get_str(2), Ok(Some("33")));
+    assert_eq!(rs.get_str(3), Err(BadReply::ColumnIndexOutOfBounds(3, 3)));
 
     let have_row = rs.advance().unwrap();
     assert!(!have_row);
@@ -186,10 +192,10 @@ fn test_rowset_quoted() {
     let have_row = rs.advance().unwrap();
     assert!(have_row);
 
-    assert_eq!(rs.get_str(0), Some(""));
-    assert_eq!(rs.get_str(1), Some("MonetDB"));
-    assert_eq!(rs.get_str(2), Some("NULL"));
-    assert_eq!(rs.get_str(3), None);
+    assert_eq!(rs.get_str(0), Ok(Some("")));
+    assert_eq!(rs.get_str(1), Ok(Some("MonetDB")));
+    assert_eq!(rs.get_str(2), Ok(Some("NULL")));
+    assert_eq!(rs.get_str(3), Err(BadReply::ColumnIndexOutOfBounds(3, 3)));
 
     let have_row = rs.advance().unwrap();
     assert!(!have_row);
@@ -198,8 +204,8 @@ fn test_rowset_quoted() {
     let mut rs = RowSet::new(ReplyBuf::new(testdata.into()), 2);
     assert_eq!(rs.advance(), Ok(true));
 
-    assert_eq!(rs.get_str(0), Some(r##"mon"etdb"##));
-    assert_eq!(rs.get_str(1), None);
+    assert_eq!(rs.get_str(0), Ok(Some(r##"mon"etdb"##)));
+    assert_eq!(rs.get_str(1), Ok(None));
 }
 
 #[test]
@@ -264,7 +270,7 @@ fn test_rowset_escaped_strings() {
         assert_eq!(advance, Ok(true), "advancing to row {row_nr}");
         for (col_nr, &expected_field) in expected_row.iter().enumerate() {
             let field = rs.get_str(col_nr);
-            assert_eq!(field, Some(expected_field), "row {row_nr} col {col_nr}");
+            assert_eq!(field, Ok(Some(expected_field)), "row {row_nr} col {col_nr}");
         }
     }
     assert!(!rs.advance().unwrap());
@@ -278,13 +284,13 @@ fn test_single_column() {
     let mut rs = RowSet::new(ReplyBuf::new(testdata.into()), 1);
 
     assert_eq!(rs.advance(), Ok(true));
-    assert_eq!(rs.get_str(0), Some("1"));
+    assert_eq!(rs.get_str(0), Ok(Some("1")));
 
     assert_eq!(rs.advance(), Ok(true));
-    assert_eq!(rs.get_str(0), None);
+    assert_eq!(rs.get_str(0), Ok(None));
 
     assert_eq!(rs.advance(), Ok(true));
-    assert_eq!(rs.get_str(0), Some(r#"    foo"bar     "#.trim()));
+    assert_eq!(rs.get_str(0), Ok(Some(r#"    foo"bar     "#.trim())));
 
     assert_eq!(rs.advance(), Ok(false));
 }
@@ -297,14 +303,14 @@ fn test_finish() {
     // .finish() works after we've consumed three rows
     let mut rs = RowSet::new(ReplyBuf::new(testdata.into()), 2);
     assert_eq!(rs.advance(), Ok(true));
-    assert_eq!(rs.get_str(0), Some("1"));
-    assert_eq!(rs.get_str(1), Some("2"));
+    assert_eq!(rs.get_str(0), Ok(Some("1")));
+    assert_eq!(rs.get_str(1), Ok(Some("2")));
     assert_eq!(rs.advance(), Ok(true));
-    assert_eq!(rs.get_str(0), Some("3"));
-    assert_eq!(rs.get_str(1), Some("4"));
+    assert_eq!(rs.get_str(0), Ok(Some("3")));
+    assert_eq!(rs.get_str(1), Ok(Some("4")));
     assert_eq!(rs.advance(), Ok(true));
-    assert_eq!(rs.get_str(0), Some("5"));
-    assert_eq!(rs.get_str(1), Some("6"));
+    assert_eq!(rs.get_str(0), Ok(Some("5")));
+    assert_eq!(rs.get_str(1), Ok(Some("6")));
     let buf = rs.finish().unwrap();
     assert_eq!(BStr::new(buf.peek()), BStr::new("&lalala\n"));
 

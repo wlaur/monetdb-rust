@@ -8,7 +8,7 @@
 
 use array_macro::array;
 use std::mem;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use urlparser::{is_our_url, parse_any_url, url_from_parms};
 
@@ -23,20 +23,8 @@ type Cowstr = Cow<'static, str>;
 /// Note: Rustdoc displays numeric values for the enum variants but these must
 /// not be considered part of the API. For a stable way to obtain a numeric value for
 /// a Parm, consider [`Parm::index`].
-#[derive(
-    Debug,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Clone,
-    Copy,
-    enum_utils::IterVariants,
-    enum_utils::FromStr,
-)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 #[repr(u8)]
-#[enumeration(rename_all = "lowercase")]
 pub enum Parm {
     Database,
     Host,
@@ -52,7 +40,6 @@ pub enum Parm {
     ClientCert,
     ClientKey,
     Language,
-    #[enumeration(alias = "fetchsize")]
     ReplySize,
     Schema,
     Sock,
@@ -60,15 +47,13 @@ pub enum Parm {
     Timezone,
 
     // Specific to this crate
-    #[enumeration(rename = "connect_timeout")]
     ConnectTimeout,
-    #[enumeration(rename = "client_info")]
+    ReadTimeout,
+    WriteTimeout,
+    OperationTimeout,
     ClientInfo,
-    #[enumeration(rename = "client_application")]
     ClientApplication,
-    #[enumeration(rename = "client_remark")]
     ClientRemark,
-    #[enumeration(rename = "max_response_size")]
     MaxResponseSize,
 
     // Unused but recognized to pass the tests
@@ -81,6 +66,44 @@ pub enum Parm {
 }
 
 impl Parm {
+    pub fn iter() -> impl Iterator<Item = Self> {
+        [
+            Self::Database,
+            Self::Host,
+            Self::Port,
+            Self::Tls,
+            Self::User,
+            Self::Password,
+            Self::Autocommit,
+            Self::Binary,
+            Self::Cert,
+            Self::CertHash,
+            Self::ClientCert,
+            Self::ClientKey,
+            Self::Language,
+            Self::ReplySize,
+            Self::Schema,
+            Self::Sock,
+            Self::SockDir,
+            Self::Timezone,
+            Self::ConnectTimeout,
+            Self::ReadTimeout,
+            Self::WriteTimeout,
+            Self::OperationTimeout,
+            Self::ClientInfo,
+            Self::ClientApplication,
+            Self::ClientRemark,
+            Self::MaxResponseSize,
+            Self::TableSchema,
+            Self::Table,
+            Self::Hash,
+            Self::Debug,
+            Self::Logfile,
+            Self::MaxPrefetch,
+        ]
+        .into_iter()
+    }
+
     /// Return the name of this parameter when used in a URL.
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -103,6 +126,9 @@ impl Parm {
             Parm::SockDir => "sockdir",
             Parm::Timezone => "timezone",
             Parm::ConnectTimeout => "connect_timeout",
+            Parm::ReadTimeout => "read_timeout",
+            Parm::WriteTimeout => "write_timeout",
+            Parm::OperationTimeout => "operation_timeout",
             Parm::ClientInfo => "client_info",
             Parm::ClientApplication => "client_application",
             Parm::ClientRemark => "client_remark",
@@ -157,7 +183,8 @@ impl Parm {
         use ParmType::*;
         match self {
             Tls | Autocommit | ClientInfo => Bool,
-            Port | ReplySize | Timezone | MaxPrefetch | ConnectTimeout | MaxResponseSize => Int,
+            Port | ReplySize | Timezone | MaxPrefetch | ConnectTimeout | ReadTimeout
+            | WriteTimeout | OperationTimeout | MaxResponseSize => Int,
             _ => Str,
         }
     }
@@ -170,6 +197,48 @@ impl Parm {
     #[allow(dead_code)]
     pub(crate) fn require_int(&self) -> bool {
         matches!(self, Parm::Port | Parm::ReplySize | Parm::Timezone)
+    }
+}
+
+impl FromStr for Parm {
+    type Err = ();
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        match name {
+            "database" => Ok(Self::Database),
+            "host" => Ok(Self::Host),
+            "port" => Ok(Self::Port),
+            "tls" => Ok(Self::Tls),
+            "user" => Ok(Self::User),
+            "password" => Ok(Self::Password),
+            "autocommit" => Ok(Self::Autocommit),
+            "binary" => Ok(Self::Binary),
+            "cert" => Ok(Self::Cert),
+            "certhash" => Ok(Self::CertHash),
+            "clientcert" => Ok(Self::ClientCert),
+            "clientkey" => Ok(Self::ClientKey),
+            "language" => Ok(Self::Language),
+            "replysize" | "fetchsize" => Ok(Self::ReplySize),
+            "schema" => Ok(Self::Schema),
+            "sock" => Ok(Self::Sock),
+            "sockdir" => Ok(Self::SockDir),
+            "timezone" => Ok(Self::Timezone),
+            "connect_timeout" => Ok(Self::ConnectTimeout),
+            "read_timeout" => Ok(Self::ReadTimeout),
+            "write_timeout" => Ok(Self::WriteTimeout),
+            "operation_timeout" => Ok(Self::OperationTimeout),
+            "client_info" => Ok(Self::ClientInfo),
+            "client_application" => Ok(Self::ClientApplication),
+            "client_remark" => Ok(Self::ClientRemark),
+            "max_response_size" => Ok(Self::MaxResponseSize),
+            "tableschema" => Ok(Self::TableSchema),
+            "table" => Ok(Self::Table),
+            "hash" => Ok(Self::Hash),
+            "debug" => Ok(Self::Debug),
+            "logfile" => Ok(Self::Logfile),
+            "maxprefetch" => Ok(Self::MaxPrefetch),
+            _ => Err(()),
+        }
     }
 }
 
@@ -200,6 +269,12 @@ fn test_parm_names() {
     assert_eq!(Parm::from_str("sockdir"), Ok(Parm::SockDir));
     assert_eq!(Parm::from_str("timezone"), Ok(Parm::Timezone));
     assert_eq!(Parm::from_str("connect_timeout"), Ok(Parm::ConnectTimeout));
+    assert_eq!(Parm::from_str("read_timeout"), Ok(Parm::ReadTimeout));
+    assert_eq!(Parm::from_str("write_timeout"), Ok(Parm::WriteTimeout));
+    assert_eq!(
+        Parm::from_str("operation_timeout"),
+        Ok(Parm::OperationTimeout)
+    );
     assert_eq!(Parm::from_str("client_info"), Ok(Parm::ClientInfo));
     assert_eq!(
         Parm::from_str("client_application"),
@@ -415,20 +490,14 @@ impl From<i64> for Value {
 
 impl From<isize> for Value {
     fn from(value: isize) -> Self {
-        Value::Int(value.try_into().unwrap())
-    }
-}
-
-impl From<usize> for Value {
-    fn from(value: usize) -> Self {
-        Value::Int(value.try_into().unwrap())
+        Value::Int(value as i64)
     }
 }
 
 /// If you want to create a table indexed by [`Parm`], the table must
 /// have at least this number of elements. Use [`Parm::index`] to convert
 /// Parms to usizes.
-pub const PARM_TABLE_SIZE: usize = 31;
+pub const PARM_TABLE_SIZE: usize = 34;
 
 #[test]
 fn test_parm_table_size() {
@@ -506,6 +575,12 @@ const fn default_parameter_value_by_index(idx: usize) -> Value {
         Value::from_static("on") // we can't yet, but we'd like to
     } else if idx == ClientInfo.index() {
         Value::Bool(true)
+    } else if idx == ConnectTimeout.index() {
+        Value::Int(30)
+    } else if idx == ReadTimeout.index() || idx == WriteTimeout.index() {
+        Value::Int(60)
+    } else if idx == OperationTimeout.index() {
+        Value::Int(300)
     } else if idx == MaxResponseSize.index() {
         Value::Int(1024 * 1024 * 1024)
     } else {
@@ -546,6 +621,9 @@ impl Parameters {
     ///
     /// Primitive on which all setters and [`Parameters::take`] are based.
     pub fn replace(&mut self, parm: Parm, value: impl Into<Value>) -> ParmResult<Value> {
+        let mut value: Value = value.into();
+        value.verify_assign(parm)?;
+
         match parm {
             Parm::User => self.user_changed = true,
             Parm::Password => self.password_changed = true,
@@ -553,8 +631,6 @@ impl Parameters {
             _ => {}
         }
 
-        let mut value: Value = value.into();
-        value.verify_assign(parm)?;
         mem::swap(&mut self.parms[parm.index()], &mut value);
         Ok(value)
     }
@@ -569,6 +645,9 @@ impl Parameters {
     pub fn reset(&mut self, parm: Parm) {
         self.set(parm, THE_DEFAULT_PARAMETERS.get(parm).clone())
             .unwrap();
+        if parm == Parm::Timezone {
+            self.timezone_set = false;
+        }
     }
 
     /// Retrieve the value of a Parm as a [`Value`].
@@ -598,8 +677,13 @@ impl Parameters {
     /// Take the value of the Parm out of this Parameters object, replacing it with its
     /// default value. Can sometimes be used to save an allocation.
     pub fn take(&mut self, parm: Parm) -> Value {
-        self.replace(parm, THE_DEFAULT_PARAMETERS.get(parm).clone())
-            .unwrap()
+        let value = self
+            .replace(parm, THE_DEFAULT_PARAMETERS.get(parm).clone())
+            .unwrap();
+        if parm == Parm::Timezone {
+            self.timezone_set = false;
+        }
+        value
     }
 
     /// Set the value of a Parm which is specified by name, as a `&str` rather
@@ -647,9 +731,11 @@ impl Parameters {
     ///
     /// Supports `monetdb://`, `monetdbs://` and `mapi:monetdb://` URLs.
     pub fn apply_url(&mut self, url: &str) -> ParmResult<()> {
-        self.boundary();
-        parse_any_url(self, url)?;
-        self.boundary();
+        let mut updated = self.clone();
+        updated.boundary();
+        parse_any_url(&mut updated, url)?;
+        updated.boundary();
+        *self = updated;
         Ok(())
     }
 
@@ -824,12 +910,55 @@ impl Parameters {
         Ok(self)
     }
 
+    /// Set the absolute connection-establishment timeout in seconds.
+    /// Zero explicitly disables the timeout; negative values fail validation.
     pub fn set_connect_timeout(&mut self, value: impl Into<i64>) -> ParmResult<()> {
         self.set(Parm::ConnectTimeout, value.into())
     }
 
+    /// Set the absolute connection-establishment timeout in seconds.
+    /// Zero explicitly disables the timeout; negative values fail validation.
     pub fn with_connect_timeout(mut self, value: impl Into<i64>) -> ParmResult<Parameters> {
         self.set_connect_timeout(value)?;
+        Ok(self)
+    }
+
+    /// Set the maximum idle time for one socket read in seconds.
+    /// Zero explicitly disables the timeout; negative values fail validation.
+    pub fn set_read_timeout(&mut self, value: impl Into<i64>) -> ParmResult<()> {
+        self.set(Parm::ReadTimeout, value.into())
+    }
+
+    /// Set the maximum idle time for one socket read in seconds.
+    /// Zero explicitly disables the timeout; negative values fail validation.
+    pub fn with_read_timeout(mut self, value: impl Into<i64>) -> ParmResult<Parameters> {
+        self.set_read_timeout(value)?;
+        Ok(self)
+    }
+
+    /// Set the maximum idle time for one socket write in seconds.
+    /// Zero explicitly disables the timeout; negative values fail validation.
+    pub fn set_write_timeout(&mut self, value: impl Into<i64>) -> ParmResult<()> {
+        self.set(Parm::WriteTimeout, value.into())
+    }
+
+    /// Set the maximum idle time for one socket write in seconds.
+    /// Zero explicitly disables the timeout; negative values fail validation.
+    pub fn with_write_timeout(mut self, value: impl Into<i64>) -> ParmResult<Parameters> {
+        self.set_write_timeout(value)?;
+        Ok(self)
+    }
+
+    /// Set the absolute deadline for one post-login operation in seconds.
+    /// Zero explicitly disables the timeout; negative values fail validation.
+    pub fn set_operation_timeout(&mut self, value: impl Into<i64>) -> ParmResult<()> {
+        self.set(Parm::OperationTimeout, value.into())
+    }
+
+    /// Set the absolute deadline for one post-login operation in seconds.
+    /// Zero explicitly disables the timeout; negative values fail validation.
+    pub fn with_operation_timeout(mut self, value: impl Into<i64>) -> ParmResult<Parameters> {
+        self.set_operation_timeout(value)?;
         Ok(self)
     }
 
@@ -918,6 +1047,9 @@ pub struct Validated<'a> {
     pub connect_clientcert: Cow<'a, str>,
     pub connect_binary: u16,
     pub connect_timeout: Option<Duration>,
+    pub read_timeout: Option<Duration>,
+    pub write_timeout: Option<Duration>,
+    pub operation_timeout: Option<Duration>,
     pub max_response_size: usize,
 }
 
@@ -947,7 +1079,10 @@ impl Validated<'_> {
 
         let raw_timezone: i64 = parms.get_int(Timezone)?;
         let raw_binary: &Value = parms.get(Binary);
-        let raw_connect_timeout: Option<i64> = parms.get(ConnectTimeout).int_value();
+        let raw_connect_timeout = parms.get_int(ConnectTimeout)?;
+        let raw_read_timeout = parms.get_int(ReadTimeout)?;
+        let raw_write_timeout = parms.get_int(WriteTimeout)?;
+        let raw_operation_timeout = parms.get_int(OperationTimeout)?;
         let raw_max_response_size = parms.get_int(MaxResponseSize)?;
 
         let raw_client_info = parms.get_bool(ClientInfo)?;
@@ -1025,6 +1160,9 @@ impl Validated<'_> {
         if raw_client_info && raw_client_remark.contains('\n') {
             return Err(ClientInfoNewline(ClientRemark));
         }
+        if raw_language != "sql" {
+            return Err(InvalidValue(Language));
+        }
         // Virtual parameters
 
         // connect_port and connect_binary have already been determined above
@@ -1085,10 +1223,10 @@ impl Validated<'_> {
             None
         };
 
-        let connect_timeout = match raw_connect_timeout {
-            Some(i @ 1..) => Some(Duration::from_secs(i as u64)),
-            _ => None,
-        };
+        let connect_timeout = Self::valid_timeout(ConnectTimeout, raw_connect_timeout)?;
+        let read_timeout = Self::valid_timeout(ReadTimeout, raw_read_timeout)?;
+        let write_timeout = Self::valid_timeout(WriteTimeout, raw_write_timeout)?;
+        let operation_timeout = Self::valid_timeout(OperationTimeout, raw_operation_timeout)?;
 
         let replysize = usize::try_from(raw_replysize)
             .ok()
@@ -1112,6 +1250,9 @@ impl Validated<'_> {
             replysize,
             schema: raw_schema,
             connect_timeout,
+            read_timeout,
+            write_timeout,
+            operation_timeout,
             max_response_size,
             client_info: raw_client_info,
             client_application: raw_client_application,
@@ -1145,6 +1286,20 @@ impl Validated<'_> {
         }
 
         Ok(name)
+    }
+
+    fn valid_timeout(parm: Parm, seconds: i64) -> ParmResult<Option<Duration>> {
+        match seconds {
+            0 => Ok(None),
+            1..=crate::framing::MAX_TIMEOUT_SECONDS => {
+                let timeout = Duration::from_secs(seconds as u64);
+                if Instant::now().checked_add(timeout).is_none() {
+                    return Err(ParmError::InvalidValue(parm));
+                }
+                Ok(Some(timeout))
+            }
+            _ => Err(ParmError::InvalidValue(parm)),
+        }
     }
 
     fn valid_certhash(certhash: &str) -> ParmResult<String> {
@@ -1203,6 +1358,53 @@ fn validation_rejects_timezone_overflow() {
 }
 
 #[test]
+fn failed_assignments_and_timezone_resets_do_not_change_parameter_state() {
+    let mut parameters = Parameters::default();
+    parameters.set_password("secret").unwrap();
+    parameters.boundary();
+    assert!(parameters.set(Parm::User, 1_i64).is_err());
+    parameters.boundary();
+    assert_eq!(parameters.get_str(Parm::Password).unwrap(), "secret");
+
+    assert!(parameters.set(Parm::Timezone, "invalid").is_err());
+    assert_eq!(
+        parameters.validate().unwrap().connect_timezone_seconds,
+        None
+    );
+    parameters.set_timezone(60).unwrap();
+    assert_eq!(
+        parameters.validate().unwrap().connect_timezone_seconds,
+        Some(3600)
+    );
+    parameters.reset(Parm::Timezone);
+    assert_eq!(
+        parameters.validate().unwrap().connect_timezone_seconds,
+        None
+    );
+
+    parameters.set_timezone(60).unwrap();
+    assert_eq!(parameters.take(Parm::Timezone), Value::Int(60));
+    assert_eq!(
+        parameters.validate().unwrap().connect_timezone_seconds,
+        None
+    );
+}
+
+#[test]
+fn failed_url_updates_do_not_change_parameter_state() {
+    let mut parameters = Parameters::default();
+    parameters.set_host("original.example").unwrap();
+    let original = parameters.clone();
+
+    assert!(
+        parameters
+            .apply_url("monetdb://replacement.example/database?unknown=value")
+            .is_err()
+    );
+    assert_eq!(parameters, original);
+}
+
+#[test]
 fn validation_rejects_non_positive_response_limit() {
     let mut parameters = Parameters::default();
     parameters.set_max_response_size(0).unwrap();
@@ -1210,4 +1412,78 @@ fn validation_rejects_non_positive_response_limit() {
         parameters.validate(),
         Err(ParmError::InvalidValue(Parm::MaxResponseSize))
     ));
+}
+
+#[test]
+fn validation_rejects_non_sql_languages() {
+    for language in ["mal", "msql", "other"] {
+        let mut parameters = Parameters::default();
+        parameters.set_language(language).unwrap();
+        assert!(matches!(
+            parameters.validate(),
+            Err(ParmError::InvalidValue(Parm::Language))
+        ));
+    }
+}
+
+#[test]
+fn validation_applies_finite_timeout_defaults() {
+    let parameters = Parameters::default();
+    let validated = parameters.validate().unwrap();
+    assert_eq!(validated.connect_timeout, Some(Duration::from_secs(30)));
+    assert_eq!(validated.read_timeout, Some(Duration::from_secs(60)));
+    assert_eq!(validated.write_timeout, Some(Duration::from_secs(60)));
+    assert_eq!(validated.operation_timeout, Some(Duration::from_secs(300)));
+}
+
+#[test]
+fn validation_accepts_explicit_infinite_timeouts_and_rejects_negative_values() {
+    for parm in [
+        Parm::ConnectTimeout,
+        Parm::ReadTimeout,
+        Parm::WriteTimeout,
+        Parm::OperationTimeout,
+    ] {
+        let mut parameters = Parameters::default();
+        parameters.set(parm, 0_i64).unwrap();
+        let validated = parameters.validate().unwrap();
+        let timeout = match parm {
+            Parm::ConnectTimeout => validated.connect_timeout,
+            Parm::ReadTimeout => validated.read_timeout,
+            Parm::WriteTimeout => validated.write_timeout,
+            Parm::OperationTimeout => validated.operation_timeout,
+            _ => unreachable!(),
+        };
+        assert_eq!(timeout, None);
+
+        parameters.set(parm, -1_i64).unwrap();
+        assert!(matches!(
+            parameters.validate(),
+            Err(ParmError::InvalidValue(rejected)) if rejected == parm
+        ));
+    }
+}
+
+#[test]
+fn validation_rejects_unrepresentable_timeout_deadlines() {
+    for parm in [
+        Parm::ConnectTimeout,
+        Parm::ReadTimeout,
+        Parm::WriteTimeout,
+        Parm::OperationTimeout,
+    ] {
+        let mut parameters = Parameters::default();
+        parameters
+            .set(parm, crate::framing::MAX_TIMEOUT_SECONDS)
+            .unwrap();
+        assert!(parameters.validate().is_ok());
+
+        parameters
+            .set(parm, crate::framing::MAX_TIMEOUT_SECONDS + 1)
+            .unwrap();
+        assert!(matches!(
+            parameters.validate(),
+            Err(ParmError::InvalidValue(rejected)) if rejected == parm
+        ));
+    }
 }

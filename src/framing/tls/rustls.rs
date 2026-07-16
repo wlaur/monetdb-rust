@@ -6,19 +6,14 @@
 //
 // Copyright 2024 MonetDB Foundation
 
-use std::{
-    fmt,
-    fs::File,
-    io::{self, BufReader},
-    sync::Arc,
-};
+use std::{fmt, io, sync::Arc};
 
 use rustls::{
     CertificateError, ClientConfig, ClientConnection, DigitallySignedStruct, Error, RootCertStore,
     SignatureScheme, StreamOwned,
     client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
     crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature},
-    pki_types::{CertificateDer, ServerName, UnixTime},
+    pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime, pem::PemObject},
 };
 use rustls_platform_verifier::BuilderVerifierExt;
 use sha2::{Digest, Sha256};
@@ -39,6 +34,7 @@ fn wrap_inner(
     parms: &Validated,
     sock: ServerSock,
 ) -> Result<ServerSock, Box<dyn std::error::Error>> {
+    let control = sock.control();
     let builder = ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]);
     let builder = match parms.connect_tls_verify {
         TlsVerify::System => builder.with_platform_verifier()?,
@@ -75,17 +71,19 @@ fn wrap_inner(
     let stream = StreamOwned::new(client, sock);
     let wrapped = StreamWrapper(stream);
 
-    Ok(ServerSock::new(wrapped))
+    Ok(ServerSock::wrap(wrapped, control))
 }
 
-fn load_certificates(path: &str) -> Result<Vec<CertificateDer<'static>>, io::Error> {
-    let mut reader = BufReader::new(File::open(path)?);
-    let certificates = rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?;
+fn load_certificates(
+    path: &str,
+) -> Result<Vec<CertificateDer<'static>>, Box<dyn std::error::Error>> {
+    let certificates = CertificateDer::pem_file_iter(path)?.collect::<Result<Vec<_>, _>>()?;
     if certificates.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("certificate file {path:?} contains no certificates"),
-        ));
+        )
+        .into());
     }
     Ok(certificates)
 }
@@ -101,14 +99,7 @@ fn load_roots(path: &str) -> Result<RootCertStore, Box<dyn std::error::Error>> {
 fn load_private_key(
     path: &str,
 ) -> Result<rustls::pki_types::PrivateKeyDer<'static>, Box<dyn std::error::Error>> {
-    let mut reader = BufReader::new(File::open(path)?);
-    rustls_pemfile::private_key(&mut reader)?.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("private key file {path:?} contains no private key"),
-        )
-        .into()
-    })
+    PrivateKeyDer::from_pem_file(path).map_err(Into::into)
 }
 
 struct HashVerifier {
@@ -184,4 +175,12 @@ impl io::Write for StreamWrapper {
     }
 }
 
-impl ServerSockTrait for StreamWrapper {}
+impl ServerSockTrait for StreamWrapper {
+    fn set_socket_read_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()> {
+        self.0.sock.set_socket_read_timeout(timeout)
+    }
+
+    fn set_socket_write_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()> {
+        self.0.sock.set_socket_write_timeout(timeout)
+    }
+}

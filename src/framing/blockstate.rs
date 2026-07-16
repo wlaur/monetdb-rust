@@ -33,7 +33,9 @@ impl Header {
     }
 
     pub fn from_slice(slice: &[u8]) -> FramingResult<Self> {
-        let bytes = slice.try_into().unwrap();
+        let bytes = slice
+            .try_into()
+            .map_err(|_| FramingError::InvalidHeaderLength(slice.len()))?;
         Self::from_bytes(bytes)
     }
 
@@ -124,7 +126,7 @@ impl BlockState {
                 }
 
                 End => {
-                    panic!("cannot continue in End state");
+                    return Err(FramingError::MessageAlreadyComplete);
                 }
             }
         }
@@ -159,6 +161,14 @@ mod tests {
 
         bs.interpret([1, 0]).unwrap();
         assert_eq!(bs, End);
+        assert_eq!(
+            bs.interpret([0, 0]),
+            Err(FramingError::MessageAlreadyComplete)
+        );
+        assert_eq!(
+            Header::from_slice(&[0]),
+            Err(FramingError::InvalidHeaderLength(1))
+        );
     }
 
     fn head(remaining: usize, last: bool) -> [u8; 2] {

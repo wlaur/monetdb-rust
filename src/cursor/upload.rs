@@ -33,7 +33,8 @@ impl Cursor {
         F: FnMut(&str) -> CursorResult<Cow<'a, [u8]>>,
     {
         let mut refused = None;
-        self.conn.run_locked(
+        self.conn.run_locked_with_timeouts(
+            self.timeouts,
             |state,
              delayed: &mut DelayedCommands,
              mut sock: ServerSock|

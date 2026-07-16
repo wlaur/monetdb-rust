@@ -17,8 +17,7 @@ Requirements
 
 1. Support MonetDB versions Jun2020 and higher
 
-2. Support Rust 1.80 and higher. in the early stages we can still increase this
-   number.
+2. Support the current stable Rust toolchain.
 
 3. Support SQL and MAL. The latter primarily for tracing / profiling
 
@@ -46,5 +45,4 @@ Of course we'll fully follow the URL spec. We'll have a Parameters object holdin
 the properties and a Validated object that holds them after validation.
 
 Note: Parameters and Validated now implemented.
-
 

@@ -12,10 +12,13 @@ use std::{
     env,
     ffi::OsStr,
     io::{self, ErrorKind, Write},
-    net::{TcpStream, ToSocketAddrs},
+    net::{SocketAddr, TcpStream, ToSocketAddrs},
     path::PathBuf,
     process,
     str::Utf8Error,
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
 };
 
 #[cfg(unix)]
@@ -34,7 +37,7 @@ use crate::{
     util::{hash_algorithms, ioerror::IoError},
 };
 
-use super::{ServerSock, ServerState};
+use super::{ServerSock, ServerState, Timeouts};
 
 /// An error that occurs while trying to connect to MonetDB.
 #[derive(Debug, PartialEq, Eq, Clone, thiserror::Error)]
@@ -43,6 +46,8 @@ pub enum ConnectError {
     Parm(#[from] ParmError),
     #[error(transparent)]
     IO(#[from] IoError),
+    #[error("connection deadline expired")]
+    Timeout,
     #[error("invalid utf-8 sequence")]
     Utf(#[from] Utf8Error),
     #[error("{0} in server challenge")]
@@ -69,7 +74,62 @@ pub type ConnectResult<T> = Result<T, ConnectError>;
 
 impl From<io::Error> for ConnectError {
     fn from(value: io::Error) -> Self {
-        IoError::from(value).into()
+        if value.kind() == io::ErrorKind::TimedOut {
+            ConnectError::Timeout
+        } else {
+            IoError::from(value).into()
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ConnectionDeadline(Option<Instant>);
+
+impl ConnectionDeadline {
+    fn new(timeout: Option<Duration>) -> Self {
+        let now = Instant::now();
+        Self(timeout.and_then(|timeout| now.checked_add(timeout)))
+    }
+
+    fn instant(self) -> Option<Instant> {
+        self.0
+    }
+
+    fn remaining(self) -> ConnectResult<Option<Duration>> {
+        self.0
+            .map(|deadline| {
+                deadline
+                    .checked_duration_since(Instant::now())
+                    .ok_or(ConnectError::Timeout)
+            })
+            .transpose()
+    }
+}
+
+fn run_io_with_deadline<T, F>(
+    deadline: ConnectionDeadline,
+    thread_name: &str,
+    operation: F,
+) -> ConnectResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> io::Result<T> + Send + 'static,
+{
+    let Some(remaining) = deadline.remaining()? else {
+        return operation().map_err(Into::into);
+    };
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::Builder::new()
+        .name(thread_name.into())
+        .spawn(move || {
+            let _ = sender.send(operation());
+        })?;
+    match receiver.recv_timeout(remaining) {
+        Ok(result) => result.map_err(Into::into),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(ConnectError::Timeout),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(io::Error::other(format!("{thread_name} worker stopped without a result")).into())
+        }
     }
 }
 
@@ -98,79 +158,115 @@ impl fmt::Display for Endian {
 }
 
 #[cfg(not(unix))]
-fn connect_unix_socket(_parms: &Validated) -> ConnectResult<ServerSock> {
+fn connect_unix_socket(
+    _parms: &Validated,
+    _deadline: ConnectionDeadline,
+) -> ConnectResult<ServerSock> {
     Err(ConnectError::UnixDomain)
 }
 
 #[cfg(unix)]
-fn connect_unix_socket(parms: &Validated) -> ConnectResult<ServerSock> {
-    let path = parms.connect_unix.as_ref();
-    // UnixStream has no connect_timeout method, but unix domain sockets
-    // are unlikely to hang anyway.
-    match UnixStream::connect(path) {
-        Ok(mut s) => {
-            debug!("connected to {path}");
-            s.write_all(b"0")?;
-            Ok(ServerSock::new(s))
+fn connect_unix_socket(
+    parms: &Validated,
+    deadline: ConnectionDeadline,
+) -> ConnectResult<ServerSock> {
+    let path = PathBuf::from(parms.connect_unix.as_ref());
+    let display_path = path.display().to_string();
+    match run_io_with_deadline(deadline, "monetdb-unix-connect", move || {
+        UnixStream::connect(path)
+    }) {
+        Ok(s) => {
+            debug!("connected to {display_path}");
+            let timeouts = Timeouts::from_validated(parms);
+            let mut sock = ServerSock::from_unix(s, timeouts, deadline.instant())?;
+            sock.write_all(b"0")?;
+            Ok(sock)
         }
         Err(e) => {
-            debug!("{path}: {e}");
-            Err(e.into())
+            debug!("{display_path}: {e}");
+            Err(e)
         }
     }
 }
 
-fn connect_tcp_socket(parms: &Validated) -> io::Result<ServerSock> {
-    let host = parms.connect_tcp.as_ref();
-    let port = parms.connect_port;
-    let timeout = parms.connect_timeout;
+fn resolve_tcp_addresses(
+    host: String,
+    port: u16,
+    deadline: ConnectionDeadline,
+) -> ConnectResult<Vec<SocketAddr>> {
+    run_io_with_deadline(deadline, "monetdb-dns-resolution", move || {
+        (host, port).to_socket_addrs().map(Iterator::collect)
+    })
+}
 
-    let mut err = None;
-    for a in (host, port).to_socket_addrs()? {
-        // Deal with the difference between connect() and connect_timeout().
-        let attempt = if let Some(duration) = timeout {
-            TcpStream::connect_timeout(&a, duration)
+fn connect_tcp_socket(
+    parms: &Validated,
+    deadline: ConnectionDeadline,
+) -> ConnectResult<ServerSock> {
+    let host = parms.connect_tcp.to_string();
+    let port = parms.connect_port;
+    let addresses = resolve_tcp_addresses(host.clone(), port, deadline)?;
+
+    let sock = connect_tcp_addresses(&addresses, deadline, |address, remaining| {
+        if let Some(duration) = remaining {
+            TcpStream::connect_timeout(address, duration)
         } else {
-            TcpStream::connect(a)
-        };
-        match attempt {
+            TcpStream::connect(address)
+        }
+    })?
+    .ok_or_else(|| {
+        debug!("no ip addresses found for '{host}'");
+        io::Error::new(ErrorKind::NotFound, format!("no ip addresses for '{host}'"))
+    })?;
+    if let Err(e) = sock.set_nodelay(true) {
+        debug!("failed to set nodelay: {e}");
+    }
+    ServerSock::from_tcp(sock, Timeouts::from_validated(parms), deadline.instant())
+        .map_err(Into::into)
+}
+
+fn connect_tcp_addresses<T, F>(
+    addresses: &[SocketAddr],
+    deadline: ConnectionDeadline,
+    mut connect: F,
+) -> ConnectResult<Option<T>>
+where
+    F: FnMut(&SocketAddr, Option<Duration>) -> io::Result<T>,
+{
+    let mut err = None;
+    for address in addresses {
+        let remaining = deadline.remaining()?;
+        match connect(address, remaining) {
             Err(e) => {
-                debug!("{a}: {e}");
+                debug!("{address}: {e}");
                 err = Some(e);
-                continue;
             }
-            Ok(sock) => {
-                debug!("connected to {a}");
-                if let Err(e) = sock.set_nodelay(true) {
-                    debug!("failed to set nodelay: {e}");
-                }
-                return Ok(ServerSock::new(sock));
+            Ok(value) => {
+                debug!("connected to {address}");
+                return Ok(Some(value));
             }
         }
     }
     if let Some(e) = err {
-        Err(e)
+        Err(e.into())
     } else {
-        // unlikely, but apparently .to_sock_addrs returned an empty set and not an error.
-        debug!("no ip addresses found for '{host}'");
-        let err = io::Error::new(ErrorKind::NotFound, format!("no ip addresses for '{host}'"));
-        Err(err)
+        Ok(None)
     }
 }
 
-fn connect_socket(parms: &Validated) -> ConnectResult<ServerSock> {
+fn connect_socket(parms: &Validated, deadline: ConnectionDeadline) -> ConnectResult<ServerSock> {
     let mut err: Option<ConnectError> = None;
 
     if !parms.connect_unix.is_empty() {
-        match connect_unix_socket(parms) {
+        match connect_unix_socket(parms, deadline) {
             Ok(s) => return Ok(s),
             Err(e) => err = Some(e),
         }
     }
     if !parms.connect_tcp.is_empty() {
-        match connect_tcp_socket(parms) {
+        match connect_tcp_socket(parms, deadline) {
             Ok(s) => return wrap_tls(parms, s),
-            Err(e) => err = Some(e.into()),
+            Err(e) => err = Some(e),
         }
     }
     Err(err.unwrap_or_else(|| {
@@ -215,7 +311,8 @@ enum Login {
 
 pub fn establish_connection(
     mut parms: Parameters,
-) -> ConnectResult<(ServerSock, ServerState, DelayedCommands)> {
+) -> ConnectResult<(ServerSock, ServerState, DelayedCommands, Timeouts)> {
+    let deadline = ConnectionDeadline::new(parms.validate()?.connect_timeout);
     'redirect: for _ in 0..10 {
         let validated = parms.validate()?;
         if log_enabled!(log::Level::Debug)
@@ -223,7 +320,7 @@ pub fn establish_connection(
         {
             debug!("connecting to {url}");
         }
-        let mut sock = connect_socket(&validated)?;
+        let mut sock = connect_socket(&validated, deadline)?;
         'restart: loop {
             let (login, mut delayed) = login(&validated, sock)?;
             match login {
@@ -231,7 +328,11 @@ pub fn establish_connection(
                     // Send the delayed commands, do not wait to receive the
                     // reply, we will do that later
                     return match delayed.send_delayed(sock) {
-                        Ok(sock) => Ok((sock, state, delayed)),
+                        Ok(sock) => {
+                            let timeouts = Timeouts::from_validated(&validated);
+                            sock.set_connection_deadline(timeouts, None);
+                            Ok((sock, state, delayed, timeouts))
+                        }
                         Err(CursorError::IO(error)) => Err(ConnectError::IO(error)),
                         Err(error) => Err(ConnectError::UnexpectedResponse(error.to_string())),
                     };
@@ -405,28 +506,29 @@ fn challenge_response(
             );
             state.time_zone_seconds = seconds_east;
         }
+
+        if !parms.schema.is_empty() {
+            let schema = parms.schema.replace('"', "\"\"");
+            delayed.add("schema", format_args!("sSET SCHEMA \"{schema}\";"));
+        }
     }
 
     response.push(':'); // after the handshake options
 
     if chal.clientinfo && parms.client_info {
-        if parms.language == "sql" {
-            let mut info = ClientInfo::default();
-            if !parms.client_application.is_empty() {
-                info.application_name = Cow::Owned(parms.client_application.to_string());
-            }
-            if !parms.client_remark.is_empty() {
-                info.client_remark = Cow::Owned(parms.client_remark.to_string());
-            }
-            write!(delayed.buffer, "{}", SqlForm(&info)).unwrap();
-            delayed.buffer.end();
-            delayed.responses.push(ExpectedResponse {
-                description: "ClientInfo".into(),
-                ignore_server_error: true,
-            });
-        } else if parms.language == "mal" || parms.language == "msql" {
-            todo!()
+        let mut info = ClientInfo::default();
+        if !parms.client_application.is_empty() {
+            info.application_name = Cow::Owned(parms.client_application.to_string());
         }
+        if !parms.client_remark.is_empty() {
+            info.client_remark = Cow::Owned(parms.client_remark.to_string());
+        }
+        write!(delayed.buffer, "{}", SqlForm(&info)).unwrap();
+        delayed.buffer.end();
+        delayed.responses.push(ExpectedResponse {
+            description: "ClientInfo".into(),
+            ignore_server_error: true,
+        });
     }
 
     Ok((state, delayed))
@@ -616,10 +718,16 @@ impl fmt::Display for SqlForm<'_> {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
+    use std::{
+        io::Read,
+        net::{TcpListener, TcpStream},
+    };
+
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn nonexistent_unix_socket_returns_an_error() {
         let mut parameters = Parameters::default();
@@ -628,7 +736,145 @@ mod tests {
             .unwrap();
         let validated = parameters.validate().unwrap();
 
-        assert!(connect_socket(&validated).is_err());
+        assert!(
+            connect_socket(
+                &validated,
+                ConnectionDeadline::new(Some(Duration::from_secs(1)))
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn blocking_resolution_is_bounded_by_the_connection_deadline() {
+        let started = Instant::now();
+        let result = run_io_with_deadline(
+            ConnectionDeadline::new(Some(Duration::from_millis(25))),
+            "monetdb-test-resolution",
+            || {
+                thread::sleep(Duration::from_secs(1));
+                Ok(())
+            },
+        );
+
+        assert_eq!(result, Err(ConnectError::Timeout));
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn multiple_addresses_share_one_connection_deadline() {
+        let addresses = [
+            "127.0.0.1:1".parse().unwrap(),
+            "127.0.0.1:2".parse().unwrap(),
+        ];
+        let mut remaining = Vec::new();
+        let connected = connect_tcp_addresses(
+            &addresses,
+            ConnectionDeadline::new(Some(Duration::from_secs(1))),
+            |_address, timeout| {
+                remaining.push(timeout.unwrap());
+                if remaining.len() == 1 {
+                    thread::sleep(Duration::from_millis(20));
+                    Err(io::Error::new(io::ErrorKind::ConnectionRefused, "first"))
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(connected, Some(()));
+        assert!(remaining[1] < remaining[0]);
+    }
+
+    fn silent_server_parameters(tls: bool) -> Parameters {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        thread::spawn(move || {
+            let (_socket, _) = listener.accept().unwrap();
+            thread::sleep(Duration::from_secs(5));
+        });
+        let mut parameters = Parameters::default();
+        parameters.set_host("127.0.0.1").unwrap();
+        parameters.set_port(port).unwrap();
+        parameters.set_tls(tls).unwrap();
+        parameters.set_connect_timeout(1).unwrap();
+        parameters
+    }
+
+    fn write_message(stream: &mut TcpStream, message: &[u8]) {
+        let header = (((message.len() as u16) << 1) | 1).to_le_bytes();
+        stream.write_all(&header).unwrap();
+        stream.write_all(message).unwrap();
+    }
+
+    fn read_message(stream: &mut TcpStream) {
+        loop {
+            let mut header = [0; 2];
+            stream.read_exact(&mut header).unwrap();
+            let header = u16::from_le_bytes(header);
+            let mut body = vec![0; usize::from(header >> 1)];
+            stream.read_exact(&mut body).unwrap();
+            if header & 1 != 0 {
+                return;
+            }
+        }
+    }
+
+    fn redirect_stall_parameters() -> Parameters {
+        let target = TcpListener::bind("127.0.0.1:0").unwrap();
+        let target_port = target.local_addr().unwrap().port();
+        let redirector = TcpListener::bind("127.0.0.1:0").unwrap();
+        let redirector_port = redirector.local_addr().unwrap().port();
+        thread::spawn(move || {
+            let (mut stream, _) = redirector.accept().unwrap();
+            let mut nuls = [0; 8];
+            stream.read_exact(&mut nuls).unwrap();
+            write_message(
+                &mut stream,
+                b"salt:mserver:9:SHA512:LIT:SHA512:sql=9:BINARY=1:",
+            );
+            read_message(&mut stream);
+            write_message(
+                &mut stream,
+                format!("^mapi:monetdb://127.0.0.1:{target_port}/demo").as_bytes(),
+            );
+            let (_target_stream, _) = target.accept().unwrap();
+            thread::sleep(Duration::from_secs(5));
+        });
+        let mut parameters = Parameters::default();
+        parameters.set_host("127.0.0.1").unwrap();
+        parameters.set_port(redirector_port).unwrap();
+        parameters.set_connect_timeout(1).unwrap();
+        parameters
+    }
+
+    #[test]
+    fn silent_login_is_bounded_by_the_connection_deadline() {
+        let result = establish_connection(silent_server_parameters(false));
+        match result {
+            Err(error) => assert_eq!(error, ConnectError::Timeout),
+            Ok(_) => panic!("silent login unexpectedly connected"),
+        }
+    }
+
+    #[cfg(feature = "rustls")]
+    #[test]
+    fn silent_tls_is_bounded_by_the_connection_deadline() {
+        let result = establish_connection(silent_server_parameters(true));
+        match result {
+            Err(error) => assert_eq!(error, ConnectError::Timeout),
+            Ok(_) => panic!("silent TLS server unexpectedly connected"),
+        }
+    }
+
+    #[test]
+    fn redirect_stalls_share_the_original_connection_deadline() {
+        let result = establish_connection(redirect_stall_parameters());
+        match result {
+            Err(error) => assert_eq!(error, ConnectError::Timeout),
+            Ok(_) => panic!("redirect stall unexpectedly connected"),
+        }
     }
 
     #[test]
@@ -649,6 +895,33 @@ mod tests {
         assert_eq!(
             error,
             ConnectError::InvalidChallenge("invalid oobintr level".into())
+        );
+    }
+
+    #[test]
+    fn configured_schema_is_applied_as_a_quoted_identifier() {
+        let mut parameters = Parameters::default();
+        parameters.set_schema("a\"b").unwrap();
+        let validated = parameters.validate().unwrap();
+        let challenge = Challenge {
+            salt: "salt",
+            server_type: "mserver",
+            response_algos: "SHA512",
+            endian: Endian::Lit,
+            prehash_algo: "SHA512",
+            sql_handshake_option_level: 9,
+            binary: 1,
+            clientinfo: false,
+        };
+        let mut response = String::new();
+
+        let (_, delayed) = challenge_response(&validated, &challenge, &mut response).unwrap();
+        assert!(
+            delayed
+                .buffer
+                .peek()
+                .windows(b"sSET SCHEMA \"a\"\"b\";\n".len())
+                .any(|window| window == b"sSET SCHEMA \"a\"\"b\";\n")
         );
     }
 }

@@ -101,8 +101,7 @@ impl DelayedCommands {
         for resp in self.responses.drain(..) {
             buffer.clear();
             conn = MapiReader::to_limited(conn, buffer, max_response_size)?;
-            if let Some(err_msg) = buffer.strip_prefix(b"!") {
-                let msg = String::from_utf8_lossy(err_msg);
+            if let Some(msg) = super::replies::server_error_message(buffer) {
                 let description = &resp.description;
                 if resp.ignore_server_error {
                     log::warn!("delayed {description}: {msg}");
