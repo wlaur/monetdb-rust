@@ -62,6 +62,19 @@ pub(crate) fn response_autocommit(response: &[u8]) -> Option<bool> {
         .next_back()
 }
 
+pub(crate) fn server_error_message(response: &[u8]) -> Option<String> {
+    let mut messages = response
+        .split(|byte| *byte == b'\n')
+        .filter_map(|line| line.strip_prefix(b"!"));
+    let first = messages.next()?;
+    let mut result = String::from_utf8_lossy(first).into_owned();
+    for message in messages {
+        result.push('\n');
+        result.push_str(&String::from_utf8_lossy(message));
+    }
+    Some(result)
+}
+
 #[derive(Debug)]
 pub struct ReplyBuf {
     data: Vec<u8>,
@@ -369,24 +382,10 @@ impl ReplyParser {
     }
 
     pub fn detect_errors(response: &[u8]) -> CursorResult<()> {
-        let start = if response.is_empty() {
-            return Ok(());
-        } else if response[0] == b'!' {
-            1
-        } else if let Some(pos) = memmem::find(response, b"\n!") {
-            pos + 1
-        } else {
-            return Ok(());
-        };
-
-        let mut bytes = &response[start..];
-        if let Some(idx) = bytes.find_byte(b'\n') {
-            bytes = &bytes[..idx];
+        match server_error_message(response) {
+            Some(message) => Err(CursorError::Server(message)),
+            None => Ok(()),
         }
-        let message = std::str::from_utf8(bytes)
-            .unwrap_or("server sent an error message but it can't be decoded");
-
-        Err(CursorError::Server(message.to_string()))
     }
 
     fn parse(buf: ReplyBuf) -> RResult<ReplyParser> {
@@ -652,13 +651,22 @@ pub fn from_utf8<'a>(context: &'static str, bytes: &'a [u8]) -> RResult<&'a str>
 
 #[cfg(test)]
 mod tests {
-    use super::{BadReply, ReplyParser, ResultSet, response_autocommit};
+    use super::{BadReply, ReplyParser, ResultSet, response_autocommit, server_error_message};
 
     #[test]
     fn extracts_last_autocommit_status() {
         assert_eq!(response_autocommit(b"&4 f\n"), Some(false));
         assert_eq!(response_autocommit(b"&4 f\n&4 t\n"), Some(true));
         assert_eq!(response_autocommit(b"[ \"&4 f\"\t]\n"), None);
+    }
+
+    #[test]
+    fn preserves_all_server_error_lines() {
+        let response = b"&2 0\n!42000!syntax error\n!detail from optimizer\n&4 f\n";
+        assert_eq!(
+            server_error_message(response).as_deref(),
+            Some("42000!syntax error\ndetail from optimizer")
+        );
     }
 
     #[test]

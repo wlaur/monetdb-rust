@@ -184,10 +184,8 @@ impl Connection {
             sock = MapiReader::to_limited(sock, &mut response, self.0.max_response_size)?;
             let expected = if enabled { b"&4 t" } else { b"&4 f" };
             if !response.is_empty() && !response.starts_with(expected) {
-                if let Some(message) = response.strip_prefix(b"!") {
-                    response_error = Some(CursorError::Server(
-                        String::from_utf8_lossy(message).trim().to_owned(),
-                    ));
+                if let Some(message) = crate::cursor::replies::server_error_message(&response) {
+                    response_error = Some(CursorError::Server(message));
                 } else {
                     response_error = Some(CursorError::BadReply(
                         crate::cursor::replies::BadReply::UnexpectedHeader(response.into()),
