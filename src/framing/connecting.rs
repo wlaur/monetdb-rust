@@ -506,6 +506,11 @@ fn challenge_response(
             );
             state.time_zone_seconds = seconds_east;
         }
+
+        if !parms.schema.is_empty() {
+            let schema = parms.schema.replace('"', "\"\"");
+            delayed.add("schema", format_args!("sSET SCHEMA \"{schema}\";"));
+        }
     }
 
     response.push(':'); // after the handshake options
@@ -890,6 +895,33 @@ mod tests {
         assert_eq!(
             error,
             ConnectError::InvalidChallenge("invalid oobintr level".into())
+        );
+    }
+
+    #[test]
+    fn configured_schema_is_applied_as_a_quoted_identifier() {
+        let mut parameters = Parameters::default();
+        parameters.set_schema("a\"b").unwrap();
+        let validated = parameters.validate().unwrap();
+        let challenge = Challenge {
+            salt: "salt",
+            server_type: "mserver",
+            response_algos: "SHA512",
+            endian: Endian::Lit,
+            prehash_algo: "SHA512",
+            sql_handshake_option_level: 9,
+            binary: 1,
+            clientinfo: false,
+        };
+        let mut response = String::new();
+
+        let (_, delayed) = challenge_response(&validated, &challenge, &mut response).unwrap();
+        assert!(
+            delayed
+                .buffer
+                .peek()
+                .windows(b"sSET SCHEMA \"a\"\"b\";\n".len())
+                .any(|window| window == b"sSET SCHEMA \"a\"\"b\";\n")
         );
     }
 }
