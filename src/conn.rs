@@ -135,22 +135,29 @@ impl Connection {
 
     /// Return server environment and version metadata, loading it on first use.
     pub fn metadata(&self) -> CursorResult<ServerMetadata> {
+        self.metadata_with_timeouts(self.0.timeouts)
+    }
+
+    /// Return server metadata using the supplied timeouts while loading it.
+    pub fn metadata_with_timeouts(&self, timeouts: Timeouts) -> CursorResult<ServerMetadata> {
         let mut inner = None;
-        self.0.run_locked(|state, _delayed, sock| {
-            inner = state.sql_metadata.clone();
-            Ok(sock)
-        })?;
+        self.0
+            .run_locked_with_timeouts(timeouts, |state, _delayed, sock| {
+                inner = state.sql_metadata.clone();
+                Ok(sock)
+            })?;
         if let Some(md) = inner {
             return Ok(ServerMetadata(md));
         }
 
         // create it and put it in the state
         // (ignore harmless race condition)
-        let new_metadata = ServerMetadata::new(self)?;
-        self.0.run_locked(|state, _delayed, sock| {
-            state.sql_metadata = Some(Arc::clone(&new_metadata.0));
-            Ok(sock)
-        })?;
+        let new_metadata = ServerMetadata::new(self, timeouts)?;
+        self.0
+            .run_locked_with_timeouts(timeouts, |state, _delayed, sock| {
+                state.sql_metadata = Some(Arc::clone(&new_metadata.0));
+                Ok(sock)
+            })?;
         Ok(new_metadata)
     }
 
@@ -375,8 +382,9 @@ pub struct InnerServerMetadata {
 }
 
 impl ServerMetadata {
-    fn new(conn: &Connection) -> CursorResult<Self> {
+    fn new(conn: &Connection, timeouts: Timeouts) -> CursorResult<Self> {
         let mut cursor = conn.cursor();
+        cursor.set_timeouts(timeouts);
         cursor.set_reply_size(NonZeroUsize::new(1024).unwrap());
         cursor.execute("SELECT name, value FROM sys.environment")?;
         let mut environment = HashMap::new();
