@@ -133,6 +133,11 @@ impl Connection {
         CancelHandle(Arc::clone(&self.0))
     }
 
+    /// Return the default idle and absolute operation timeouts.
+    pub fn timeouts(&self) -> Timeouts {
+        self.0.timeouts
+    }
+
     /// Return server environment and version metadata, loading it on first use.
     pub fn metadata(&self) -> CursorResult<ServerMetadata> {
         self.metadata_with_timeouts(self.0.timeouts)
