@@ -333,6 +333,7 @@ impl ServerSock {
         Ok(Self::with_control(sock, control))
     }
 
+    #[cfg(feature = "rustls")]
     pub(crate) fn wrap(sock: impl ServerSockTrait, control: Arc<SocketControl>) -> Self {
         Self::with_control(sock, control)
     }
