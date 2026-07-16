@@ -47,7 +47,6 @@ atoi = "2.0.0"
 bstr = "1.10.0"
 decimal-rs = { version="0.1.43", optional = true }
 digest = "0.10.7"
-enum-utils = "0.1.2"
 gethostname = "0.5.0"
 hex = "0.4.3"
 log = "0.4.22"

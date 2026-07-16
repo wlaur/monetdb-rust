@@ -23,20 +23,8 @@ type Cowstr = Cow<'static, str>;
 /// Note: Rustdoc displays numeric values for the enum variants but these must
 /// not be considered part of the API. For a stable way to obtain a numeric value for
 /// a Parm, consider [`Parm::index`].
-#[derive(
-    Debug,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Clone,
-    Copy,
-    enum_utils::IterVariants,
-    enum_utils::FromStr,
-)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 #[repr(u8)]
-#[enumeration(rename_all = "lowercase")]
 pub enum Parm {
     Database,
     Host,
@@ -52,7 +40,6 @@ pub enum Parm {
     ClientCert,
     ClientKey,
     Language,
-    #[enumeration(alias = "fetchsize")]
     ReplySize,
     Schema,
     Sock,
@@ -60,21 +47,13 @@ pub enum Parm {
     Timezone,
 
     // Specific to this crate
-    #[enumeration(rename = "connect_timeout")]
     ConnectTimeout,
-    #[enumeration(rename = "read_timeout")]
     ReadTimeout,
-    #[enumeration(rename = "write_timeout")]
     WriteTimeout,
-    #[enumeration(rename = "operation_timeout")]
     OperationTimeout,
-    #[enumeration(rename = "client_info")]
     ClientInfo,
-    #[enumeration(rename = "client_application")]
     ClientApplication,
-    #[enumeration(rename = "client_remark")]
     ClientRemark,
-    #[enumeration(rename = "max_response_size")]
     MaxResponseSize,
 
     // Unused but recognized to pass the tests
@@ -87,6 +66,44 @@ pub enum Parm {
 }
 
 impl Parm {
+    pub fn iter() -> impl Iterator<Item = Self> {
+        [
+            Self::Database,
+            Self::Host,
+            Self::Port,
+            Self::Tls,
+            Self::User,
+            Self::Password,
+            Self::Autocommit,
+            Self::Binary,
+            Self::Cert,
+            Self::CertHash,
+            Self::ClientCert,
+            Self::ClientKey,
+            Self::Language,
+            Self::ReplySize,
+            Self::Schema,
+            Self::Sock,
+            Self::SockDir,
+            Self::Timezone,
+            Self::ConnectTimeout,
+            Self::ReadTimeout,
+            Self::WriteTimeout,
+            Self::OperationTimeout,
+            Self::ClientInfo,
+            Self::ClientApplication,
+            Self::ClientRemark,
+            Self::MaxResponseSize,
+            Self::TableSchema,
+            Self::Table,
+            Self::Hash,
+            Self::Debug,
+            Self::Logfile,
+            Self::MaxPrefetch,
+        ]
+        .into_iter()
+    }
+
     /// Return the name of this parameter when used in a URL.
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -180,6 +197,48 @@ impl Parm {
     #[allow(dead_code)]
     pub(crate) fn require_int(&self) -> bool {
         matches!(self, Parm::Port | Parm::ReplySize | Parm::Timezone)
+    }
+}
+
+impl FromStr for Parm {
+    type Err = ();
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        match name {
+            "database" => Ok(Self::Database),
+            "host" => Ok(Self::Host),
+            "port" => Ok(Self::Port),
+            "tls" => Ok(Self::Tls),
+            "user" => Ok(Self::User),
+            "password" => Ok(Self::Password),
+            "autocommit" => Ok(Self::Autocommit),
+            "binary" => Ok(Self::Binary),
+            "cert" => Ok(Self::Cert),
+            "certhash" => Ok(Self::CertHash),
+            "clientcert" => Ok(Self::ClientCert),
+            "clientkey" => Ok(Self::ClientKey),
+            "language" => Ok(Self::Language),
+            "replysize" | "fetchsize" => Ok(Self::ReplySize),
+            "schema" => Ok(Self::Schema),
+            "sock" => Ok(Self::Sock),
+            "sockdir" => Ok(Self::SockDir),
+            "timezone" => Ok(Self::Timezone),
+            "connect_timeout" => Ok(Self::ConnectTimeout),
+            "read_timeout" => Ok(Self::ReadTimeout),
+            "write_timeout" => Ok(Self::WriteTimeout),
+            "operation_timeout" => Ok(Self::OperationTimeout),
+            "client_info" => Ok(Self::ClientInfo),
+            "client_application" => Ok(Self::ClientApplication),
+            "client_remark" => Ok(Self::ClientRemark),
+            "max_response_size" => Ok(Self::MaxResponseSize),
+            "tableschema" => Ok(Self::TableSchema),
+            "table" => Ok(Self::Table),
+            "hash" => Ok(Self::Hash),
+            "debug" => Ok(Self::Debug),
+            "logfile" => Ok(Self::Logfile),
+            "maxprefetch" => Ok(Self::MaxPrefetch),
+            _ => Err(()),
+        }
     }
 }
 
