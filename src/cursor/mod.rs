@@ -521,10 +521,10 @@ impl Cursor {
             } = self.result_set_mut();
 
             if row_set.advance()? {
-                *next_row += 1;
+                count_row(next_row, *total_rows)?;
                 return Ok(true);
             }
-            if next_row == total_rows {
+            if next_row >= total_rows {
                 return Ok(false);
             }
             self.fetch_more_rows()?;
@@ -561,21 +561,24 @@ impl Cursor {
         self.reply_size = reply_size.get();
     }
 
-    fn decide_next_fetch(&self) -> (u64, u64, usize, usize) {
+    fn decide_next_fetch(&self) -> CursorResult<(u64, u64, usize, usize)> {
         let ResultSet {
             result_id,
             next_row,
             total_rows,
             columns,
             ..
-        } = self.result_set().unwrap();
+        } = self.result_set()?;
 
-        let n = (total_rows - *next_row).min(self.reply_size as u64) as usize;
-        (*result_id, *next_row, n, columns.len())
+        let remaining = total_rows
+            .checked_sub(*next_row)
+            .ok_or(BadReply::TooManyRows { total: *total_rows })?;
+        let n = remaining.min(self.reply_size as u64) as usize;
+        Ok((*result_id, *next_row, n, columns.len()))
     }
 
     fn fetch_more_rows(&mut self) -> CursorResult<()> {
-        let (res_id, start, n, expected_columns) = self.decide_next_fetch();
+        let (res_id, start, n, expected_columns) = self.decide_next_fetch()?;
         let cmd = format!("Xexport {res_id} {start} {n}");
 
         // scratch vector. TODO re-use this
@@ -629,6 +632,14 @@ impl Cursor {
     pub fn get<T: FromMonet>(&self, colnr: usize) -> CursorResult<Option<T>> {
         T::extract(self.result_set()?, colnr)
     }
+}
+
+fn count_row(next_row: &mut u64, total_rows: u64) -> Result<(), BadReply> {
+    if *next_row >= total_rows {
+        return Err(BadReply::TooManyRows { total: total_rows });
+    }
+    *next_row += 1;
+    Ok(())
 }
 
 fn validate_export_header(
@@ -722,6 +733,17 @@ mod tests {
                 expected: 2,
                 actual: 4_000_000_000,
             })
+        );
+    }
+
+    #[test]
+    fn result_rows_cannot_exceed_the_reported_total() {
+        let mut next_row = 0;
+        count_row(&mut next_row, 1).unwrap();
+        assert_eq!(next_row, 1);
+        assert_eq!(
+            count_row(&mut next_row, 1),
+            Err(BadReply::TooManyRows { total: 1 })
         );
     }
 }

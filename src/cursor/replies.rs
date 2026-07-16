@@ -35,6 +35,8 @@ pub enum BadReply {
     TooFewColumns(usize),
     #[error("result header includes {included} rows but reports only {total} total rows")]
     TooManyIncludedRows { included: u64, total: u64 },
+    #[error("result contains more rows than its reported total of {total}")]
+    TooManyRows { total: u64 },
     #[error("invalid backslash escape in result set")]
     InvalidBackslashEscape,
     #[error("column index {0} out of bounds, have only {1} columns")]
@@ -345,7 +347,7 @@ impl ReplyParser {
             ReplyParser::Success { affected, .. } => *affected,
             ReplyParser::Data(ResultSet {
                 total_rows: nrows, ..
-            }) => Some(*nrows as i64),
+            }) => i64::try_from(*nrows).ok(),
             _ => None,
         }
     }
@@ -729,6 +731,22 @@ mod tests {
                 total: 1
             })
         ));
+    }
+
+    #[test]
+    fn affected_rows_does_not_wrap_large_server_counts() {
+        let parser = ReplyParser::Data(ResultSet {
+            result_id: 1,
+            prepared: false,
+            next_row: 0,
+            total_rows: u64::MAX,
+            rows_included: 0,
+            columns: Vec::new(),
+            row_set: super::RowSet::new(super::ReplyBuf::new(Vec::new()), 0),
+            stashed: None,
+            to_close: Some(1),
+        });
+        assert_eq!(parser.affected_rows(), None);
     }
 
     #[test]
