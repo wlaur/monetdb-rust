@@ -175,4 +175,12 @@ impl io::Write for StreamWrapper {
     }
 }
 
-impl ServerSockTrait for StreamWrapper {}
+impl ServerSockTrait for StreamWrapper {
+    fn set_socket_read_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()> {
+        self.0.sock.set_socket_read_timeout(timeout)
+    }
+
+    fn set_socket_write_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()> {
+        self.0.sock.set_socket_write_timeout(timeout)
+    }
+}
