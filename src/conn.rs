@@ -482,8 +482,10 @@ impl ServerMetadata {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::HashMap,
         io::{self, Read, Write},
         net::{TcpListener, TcpStream},
+        num::NonZeroUsize,
         sync::mpsc,
         thread,
         time::Duration,
@@ -513,22 +515,37 @@ mod tests {
         }
     }
 
+    fn accept_login(listener: TcpListener) -> TcpStream {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut nuls = [0; 8];
+        stream.read_exact(&mut nuls).unwrap();
+        assert_eq!(nuls, [0; 8]);
+        write_message(
+            &mut stream,
+            b"salt:mserver:9:SHA512:LIT:SHA512:sql=9:BINARY=1:",
+        );
+        let _response = read_message(&mut stream);
+        write_message(&mut stream, b"=OK");
+        stream
+    }
+
+    fn test_parameters(port: u16) -> Parameters {
+        let mut parameters = Parameters::default();
+        parameters.set_host("127.0.0.1").unwrap();
+        parameters.set_port(port).unwrap();
+        parameters.set_client_info("false").unwrap();
+        parameters.set_connect_timeout(2).unwrap();
+        parameters.set_operation_timeout(0).unwrap();
+        parameters
+    }
+
     fn black_hole_query_server() -> (u16, mpsc::Receiver<()>, mpsc::Receiver<io::Result<usize>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let (query_sender, query_receiver) = mpsc::sync_channel(1);
         let (disconnect_sender, disconnect_receiver) = mpsc::sync_channel(1);
         thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut nuls = [0; 8];
-            stream.read_exact(&mut nuls).unwrap();
-            assert_eq!(nuls, [0; 8]);
-            write_message(
-                &mut stream,
-                b"salt:mserver:9:SHA512:LIT:SHA512:sql=9:BINARY=1:",
-            );
-            let _response = read_message(&mut stream);
-            write_message(&mut stream, b"=OK");
+            let mut stream = accept_login(listener);
             let _query = read_message(&mut stream);
             query_sender.send(()).unwrap();
             let mut byte = [0];
@@ -540,11 +557,7 @@ mod tests {
     #[test]
     fn cancellation_interrupts_a_locked_network_read_and_closes_the_connection() {
         let (port, query_received, disconnected) = black_hole_query_server();
-        let mut parameters = Parameters::default();
-        parameters.set_host("127.0.0.1").unwrap();
-        parameters.set_port(port).unwrap();
-        parameters.set_client_info("false").unwrap();
-        parameters.set_connect_timeout(2).unwrap();
+        let mut parameters = test_parameters(port);
         parameters.set_operation_timeout(5).unwrap();
         let connection = Connection::new(parameters).unwrap();
         let cancel = connection.cancel_handle();
@@ -579,13 +592,8 @@ mod tests {
     #[test]
     fn idle_read_timeout_closes_a_black_holed_connection() {
         let (port, query_received, disconnected) = black_hole_query_server();
-        let mut parameters = Parameters::default();
-        parameters.set_host("127.0.0.1").unwrap();
-        parameters.set_port(port).unwrap();
-        parameters.set_client_info("false").unwrap();
-        parameters.set_connect_timeout(2).unwrap();
+        let mut parameters = test_parameters(port);
         parameters.set_read_timeout(1).unwrap();
-        parameters.set_operation_timeout(0).unwrap();
         let connection = Connection::new(parameters).unwrap();
 
         let (result_sender, result_receiver) = mpsc::sync_channel(1);
@@ -609,6 +617,181 @@ mod tests {
             disconnected
                 .recv_timeout(Duration::from_secs(2))
                 .expect("timed out connection remained open")
+                .unwrap(),
+            0
+        );
+        release_sender.send(()).unwrap();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn binary_fetch_timeout_closes_the_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (fetch_sender, fetch_receiver) = mpsc::sync_channel(1);
+        let (disconnect_sender, disconnect_receiver) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            let mut stream = accept_login(listener);
+            let _query = read_message(&mut stream);
+            write_message(
+                &mut stream,
+                concat!(
+                    "&1 42 2 1 1\n",
+                    "% t # table_name\n",
+                    "% value # name\n",
+                    "% int # type\n",
+                    "% 32 # length\n",
+                    "% 0 0 # typesizes\n",
+                    "[ 1\t]\n"
+                )
+                .as_bytes(),
+            );
+            let export = read_message(&mut stream);
+            assert!(export.starts_with(b"Xexportbin 42 1 1"));
+            fetch_sender.send(()).unwrap();
+            let mut byte = [0];
+            disconnect_sender.send(stream.read(&mut byte)).unwrap();
+        });
+
+        let mut parameters = test_parameters(port);
+        parameters.set_read_timeout(1).unwrap();
+        let connection = Connection::new(parameters).unwrap();
+        let (result_sender, result_receiver) = mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = mpsc::sync_channel(0);
+        let worker = thread::spawn(move || {
+            let mut cursor = connection.cursor();
+            cursor.execute("SELECT value").unwrap();
+            let result = cursor.fetch_binary(1, 1);
+            let after_timeout = connection.cursor().execute("SELECT 2");
+            result_sender.send((result, after_timeout)).unwrap();
+            release_receiver.recv().unwrap();
+        });
+        fetch_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("binary fetch did not reach the server");
+        let (result, after_timeout) = result_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("binary fetch did not time out");
+        assert_eq!(result, Err(CursorError::Timeout));
+        assert_eq!(after_timeout, Err(CursorError::Closed));
+        assert_eq!(
+            disconnect_receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("timed out binary fetch remained open")
+                .unwrap(),
+            0
+        );
+        release_sender.send(()).unwrap();
+        worker.join().unwrap();
+    }
+
+    fn upload_server(
+        read_upload: bool,
+    ) -> (
+        u16,
+        mpsc::Receiver<()>,
+        mpsc::SyncSender<()>,
+        mpsc::Receiver<io::Result<usize>>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (upload_sender, upload_receiver) = mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = mpsc::sync_channel(0);
+        let (disconnect_sender, disconnect_receiver) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            let mut stream = accept_login(listener);
+            let _query = read_message(&mut stream);
+            write_message(&mut stream, b"\x01\x03\nrb c0\n");
+            if read_upload {
+                let _upload = read_message(&mut stream);
+                upload_sender.send(()).unwrap();
+            } else {
+                upload_sender.send(()).unwrap();
+                release_receiver.recv().unwrap();
+            }
+            let mut buffer = [0; 64 * 1024];
+            let result = loop {
+                match stream.read(&mut buffer) {
+                    Ok(0) => break Ok(0),
+                    Ok(_) => continue,
+                    Err(error) => break Err(error),
+                }
+            };
+            disconnect_sender.send(result).unwrap();
+        });
+        (port, upload_receiver, release_sender, disconnect_receiver)
+    }
+
+    #[test]
+    fn upload_prompt_timeout_closes_the_connection() {
+        let (port, upload_received, _server_release, disconnected) = upload_server(true);
+        let mut parameters = test_parameters(port);
+        parameters.set_read_timeout(1).unwrap();
+        parameters.set_write_timeout(5).unwrap();
+        let connection = Connection::new(parameters).unwrap();
+        let (result_sender, result_receiver) = mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = mpsc::sync_channel(0);
+        let worker = thread::spawn(move || {
+            let mut cursor = connection.cursor();
+            let uploads = HashMap::from([("c0".to_string(), vec![1])]);
+            let result = cursor.execute_with_binary_uploads("COPY BINARY", &uploads);
+            let after_timeout = connection.cursor().execute("SELECT 2");
+            result_sender.send((result, after_timeout)).unwrap();
+            release_receiver.recv().unwrap();
+        });
+        upload_received
+            .recv_timeout(Duration::from_secs(2))
+            .expect("upload did not reach the server");
+        let (result, after_timeout) = result_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("upload prompt did not time out");
+        assert_eq!(result, Err(CursorError::Timeout));
+        assert_eq!(after_timeout, Err(CursorError::Closed));
+        assert_eq!(
+            disconnected
+                .recv_timeout(Duration::from_secs(2))
+                .expect("timed out upload prompt remained open")
+                .unwrap(),
+            0
+        );
+        release_sender.send(()).unwrap();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn upload_body_timeout_closes_the_connection() {
+        let (port, request_sent, server_release, disconnected) = upload_server(false);
+        let mut parameters = test_parameters(port);
+        parameters.set_read_timeout(5).unwrap();
+        parameters.set_write_timeout(1).unwrap();
+        let connection = Connection::new(parameters).unwrap();
+        let (result_sender, result_receiver) = mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = mpsc::sync_channel(0);
+        let worker = thread::spawn(move || {
+            let mut cursor = connection.cursor();
+            let uploads = HashMap::from([("c0".to_string(), vec![1; 32 * 1024 * 1024])]);
+            let result = cursor.execute_with_binary_uploads_with_chunk_size(
+                "COPY BINARY",
+                &uploads,
+                NonZeroUsize::new(32 * 1024 * 1024).unwrap(),
+            );
+            let after_timeout = connection.cursor().execute("SELECT 2");
+            result_sender.send((result, after_timeout)).unwrap();
+            release_receiver.recv().unwrap();
+        });
+        request_sent
+            .recv_timeout(Duration::from_secs(2))
+            .expect("upload request did not reach the client");
+        let (result, after_timeout) = result_receiver
+            .recv_timeout(Duration::from_secs(3))
+            .expect("upload body did not time out");
+        assert_eq!(result, Err(CursorError::Timeout));
+        assert_eq!(after_timeout, Err(CursorError::Closed));
+        server_release.send(()).unwrap();
+        assert_eq!(
+            disconnected
+                .recv_timeout(Duration::from_secs(2))
+                .expect("timed out upload body remained open")
                 .unwrap(),
             0
         );
