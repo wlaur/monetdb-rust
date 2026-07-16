@@ -16,6 +16,10 @@ use super::*;
 
 type Cowstr = Cow<'static, str>;
 
+// Rust's Windows socket implementation converts larger millisecond timeouts to
+// INFINITE. Keep every platform on the largest whole-second value below that sentinel.
+const MAX_TIMEOUT_SECONDS: i64 = (u32::MAX as i64 - 1) / 1000;
+
 /// Identifies all things that can be configured when connecting to MonetDB, for
 /// example [`Host`][`Parm::Host`], [`Port`][`Parm::Port`] and
 /// [`Password`][`Parm::Password`].
@@ -1291,7 +1295,7 @@ impl Validated<'_> {
     fn valid_timeout(parm: Parm, seconds: i64) -> ParmResult<Option<Duration>> {
         match seconds {
             0 => Ok(None),
-            1.. => {
+            1..=MAX_TIMEOUT_SECONDS => {
                 let timeout = Duration::from_secs(seconds as u64);
                 if Instant::now().checked_add(timeout).is_none() {
                     return Err(ParmError::InvalidValue(parm));
@@ -1473,7 +1477,10 @@ fn validation_rejects_unrepresentable_timeout_deadlines() {
         Parm::OperationTimeout,
     ] {
         let mut parameters = Parameters::default();
-        parameters.set(parm, i64::MAX).unwrap();
+        parameters.set(parm, MAX_TIMEOUT_SECONDS).unwrap();
+        assert!(parameters.validate().is_ok());
+
+        parameters.set(parm, MAX_TIMEOUT_SECONDS + 1).unwrap();
         assert!(matches!(
             parameters.validate(),
             Err(ParmError::InvalidValue(rejected)) if rejected == parm
