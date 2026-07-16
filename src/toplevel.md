@@ -1,8 +1,8 @@
 Rust client for the [MonetDB](https://www.monetdb.org/) analytics database.
 
-Note: this crate is in its early stages. The basics seem to work but a lot has
-not been implemented yet and the API may change in incompatible ways at any
-time.
+The crate follows semantic versioning. Its synchronous SQL/MAPI API includes
+typed result conversion, TLS, binary result windows, and client-side binary
+uploads.
 
 Examples
 --------

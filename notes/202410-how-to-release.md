@@ -16,11 +16,6 @@ Section [Steps](#steps) below.
 
 Note: until we are a bit more experienced, the automated 'publish' and 'push' steps have been disabled and must be performed manually.
 
-When this is done, use `cargo release alpha` to switch the main branch back to a
-development version number. For example, after releasing version 0.7.10, `cargo
-release alpha` bumps to version 0.7.11-alpha.1. Push this commit to GitHub too,
-but do not tag it.
-
 Also, you need to manually create a GitHub release from the tag,
 with text copy-pasted from [CHANGELOG.md].
 I don't think [cargo release] can automate that.
@@ -37,7 +32,7 @@ steps below. The command to run individual steps is noted in the stepTo execute
 individual steps, write `cargo release version <version>`, `cargo release
 replace`, etc. You can also perform these actions by hand if that feels safer.
 
-1. `cargo release version <major|minor|patch|alpha>`. Bumps the version number in
+1. `cargo release version <major|minor|patch|version>`. Bumps the version number in
    Cargo.toml.
 
 2. `cargo release replace`. Adds a section for this version to [CHANGELOG.md], containing
