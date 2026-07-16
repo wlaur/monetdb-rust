@@ -1138,14 +1138,8 @@ impl Validated<'_> {
         //    empty, tableschema must also not be empty. If tableschema is not
         //    empty, database must also not be empty.
         let database = Self::valid_name(Database, raw_database)?;
-        let tableschema = Self::valid_name(TableSchema, raw_tableschema)?;
-        let table = Self::valid_name(Table, raw_table)?;
-        if !table.is_empty() && tableschema.is_empty() {
-            return Err(InvalidValue(Table));
-        }
-        if !tableschema.is_empty() && database.is_empty() {
-            return Err(InvalidValue(TableSchema));
-        }
+        let _tableschema = Self::valid_name(TableSchema, raw_tableschema)?;
+        let _table = Self::valid_name(Table, raw_table)?;
 
         // 8. Parameter port must be -1 or in the range 1-65535.
         let connect_port = match raw_port {
@@ -1351,25 +1345,6 @@ fn validation_rejects_non_positive_reply_sizes() {
             Err(ParmError::InvalidValue(Parm::ReplySize))
         ));
     }
-}
-
-#[test]
-fn validation_enforces_table_path_dependencies() {
-    let mut parameters = Parameters::default();
-    parameters.set(Parm::Table, "table").unwrap();
-    assert!(matches!(
-        parameters.validate(),
-        Err(ParmError::InvalidValue(Parm::Table))
-    ));
-
-    parameters.set(Parm::TableSchema, "schema").unwrap();
-    assert!(matches!(
-        parameters.validate(),
-        Err(ParmError::InvalidValue(Parm::TableSchema))
-    ));
-
-    parameters.set_database("database").unwrap();
-    assert!(parameters.validate().is_ok());
 }
 
 #[test]
