@@ -213,6 +213,8 @@ impl SocketControl {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum FramingError {
     InvalidBlockSize,
+    InvalidHeaderLength(usize),
+    MessageAlreadyComplete,
     Unicode,
     TooLong,
 }
@@ -223,6 +225,8 @@ impl FramingError {
             FramingError::InvalidBlockSize => {
                 "network layer: invalid block; network byte stream out of sync?"
             }
+            FramingError::InvalidHeaderLength(_) => "network layer: invalid block header length",
+            FramingError::MessageAlreadyComplete => "network layer: message is already complete",
             FramingError::Unicode => {
                 "network layer: invalid utf-8 encoding, block was expected to contain text"
             }
