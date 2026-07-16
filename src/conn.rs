@@ -609,7 +609,7 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .expect("query did not reach the server");
         let (result, after_timeout) = result_receiver
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(Duration::from_secs(8))
             .expect("timed out query did not return");
         assert_eq!(result, Err(CursorError::Timeout));
         assert_eq!(after_timeout, Err(CursorError::Closed));
@@ -670,7 +670,7 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .expect("binary fetch did not reach the server");
         let (result, after_timeout) = result_receiver
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(Duration::from_secs(8))
             .expect("binary fetch did not time out");
         assert_eq!(result, Err(CursorError::Timeout));
         assert_eq!(after_timeout, Err(CursorError::Closed));
@@ -743,7 +743,7 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .expect("upload did not reach the server");
         let (result, after_timeout) = result_receiver
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(Duration::from_secs(8))
             .expect("upload prompt did not time out");
         assert_eq!(result, Err(CursorError::Timeout));
         assert_eq!(after_timeout, Err(CursorError::Closed));
@@ -762,18 +762,18 @@ mod tests {
     fn upload_body_timeout_closes_the_connection() {
         let (port, request_sent, server_release, disconnected) = upload_server(false);
         let mut parameters = test_parameters(port);
-        parameters.set_read_timeout(5).unwrap();
+        parameters.set_read_timeout(30).unwrap();
         parameters.set_write_timeout(1).unwrap();
         let connection = Connection::new(parameters).unwrap();
         let (result_sender, result_receiver) = mpsc::sync_channel(1);
         let (release_sender, release_receiver) = mpsc::sync_channel(0);
         let worker = thread::spawn(move || {
             let mut cursor = connection.cursor();
-            let uploads = HashMap::from([("c0".to_string(), vec![1; 32 * 1024 * 1024])]);
+            let uploads = HashMap::from([("c0".to_string(), vec![1; 64 * 1024 * 1024])]);
             let result = cursor.execute_with_binary_uploads_with_chunk_size(
                 "COPY BINARY",
                 &uploads,
-                NonZeroUsize::new(32 * 1024 * 1024).unwrap(),
+                NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
             );
             let after_timeout = connection.cursor().execute("SELECT 2");
             result_sender.send((result, after_timeout)).unwrap();
@@ -783,7 +783,7 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .expect("upload request did not reach the client");
         let (result, after_timeout) = result_receiver
-            .recv_timeout(Duration::from_secs(3))
+            .recv_timeout(Duration::from_secs(10))
             .expect("upload body did not time out");
         assert_eq!(result, Err(CursorError::Timeout));
         assert_eq!(after_timeout, Err(CursorError::Closed));

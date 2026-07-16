@@ -792,7 +792,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         thread::spawn(move || {
             let (_socket, _) = listener.accept().unwrap();
-            thread::sleep(Duration::from_secs(2));
+            thread::sleep(Duration::from_secs(5));
         });
         let mut parameters = Parameters::default();
         parameters.set_host("127.0.0.1").unwrap();
@@ -840,7 +840,7 @@ mod tests {
                 format!("^mapi:monetdb://127.0.0.1:{target_port}/demo").as_bytes(),
             );
             let (_target_stream, _) = target.accept().unwrap();
-            thread::sleep(Duration::from_secs(2));
+            thread::sleep(Duration::from_secs(5));
         });
         let mut parameters = Parameters::default();
         parameters.set_host("127.0.0.1").unwrap();
