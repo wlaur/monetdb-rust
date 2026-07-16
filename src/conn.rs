@@ -205,7 +205,7 @@ impl Connection {
                 response.clear();
                 sock = MapiReader::to_limited(sock, &mut response, self.0.max_response_size)?;
                 let expected = if enabled { b"&4 t" } else { b"&4 f" };
-                if !response.is_empty() && !response.starts_with(expected) {
+                if !response.is_empty() && response.trim_ascii() != expected {
                     if let Some(message) = crate::cursor::replies::server_error_message(&response) {
                         response_error = Some(CursorError::Server(message));
                     } else {
