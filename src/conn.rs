@@ -281,9 +281,17 @@ impl Conn {
             ServerSock,
         ) -> CursorResult<ServerSock>,
     {
-        let mut guard = self.locked.lock().map_err(|_| CursorError::Poisoned)?;
+        let mut guard = match self.locked.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                self.closing.store(true, atomic::Ordering::Release);
+                let _ = self.control.shutdown();
+                return Err(CursorError::Poisoned);
+            }
+        };
         if self.closing.load(atomic::Ordering::Acquire) {
             guard.sock = None;
+            let _ = self.control.shutdown();
             return Err(CursorError::Closed);
         }
         let Some(sock) = guard.sock.take() else {
@@ -300,6 +308,7 @@ impl Conn {
             .is_err()
         {
             self.closing.store(true, atomic::Ordering::Release);
+            let _ = self.control.shutdown();
             return Err(CursorError::Poisoned);
         }
         sock.start_operation(timeouts);
@@ -333,9 +342,14 @@ impl Conn {
             }
             Err(CursorError::IO(error)) if error.kind() == std::io::ErrorKind::TimedOut => {
                 self.closing.store(true, atomic::Ordering::Release);
+                let _ = self.control.shutdown();
                 Err(CursorError::Timeout)
             }
-            Err(e) => Err(e),
+            Err(error) => {
+                self.closing.store(true, atomic::Ordering::Release);
+                let _ = self.control.shutdown();
+                Err(error)
+            }
         }
     }
 
@@ -468,7 +482,7 @@ impl ServerMetadata {
 #[cfg(test)]
 mod tests {
     use std::{
-        io::{Read, Write},
+        io::{self, Read, Write},
         net::{TcpListener, TcpStream},
         sync::mpsc,
         thread,
@@ -499,10 +513,11 @@ mod tests {
         }
     }
 
-    fn black_hole_query_server() -> (u16, mpsc::Receiver<()>) {
+    fn black_hole_query_server() -> (u16, mpsc::Receiver<()>, mpsc::Receiver<io::Result<usize>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let (query_sender, query_receiver) = mpsc::sync_channel(1);
+        let (disconnect_sender, disconnect_receiver) = mpsc::sync_channel(1);
         thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut nuls = [0; 8];
@@ -517,14 +532,14 @@ mod tests {
             let _query = read_message(&mut stream);
             query_sender.send(()).unwrap();
             let mut byte = [0];
-            let _ = stream.read(&mut byte);
+            disconnect_sender.send(stream.read(&mut byte)).unwrap();
         });
-        (port, query_receiver)
+        (port, query_receiver, disconnect_receiver)
     }
 
     #[test]
     fn cancellation_interrupts_a_locked_network_read_and_closes_the_connection() {
-        let (port, query_received) = black_hole_query_server();
+        let (port, query_received, disconnected) = black_hole_query_server();
         let mut parameters = Parameters::default();
         parameters.set_host("127.0.0.1").unwrap();
         parameters.set_port(port).unwrap();
@@ -551,12 +566,19 @@ mod tests {
             .expect("cancelled query did not return");
         assert_eq!(result, Err(CursorError::Cancelled));
         assert_eq!(after_cancel, Err(CursorError::Closed));
+        assert_eq!(
+            disconnected
+                .recv_timeout(Duration::from_secs(2))
+                .expect("cancelled connection remained open")
+                .unwrap(),
+            0
+        );
         worker.join().unwrap();
     }
 
     #[test]
     fn idle_read_timeout_closes_a_black_holed_connection() {
-        let (port, query_received) = black_hole_query_server();
+        let (port, query_received, disconnected) = black_hole_query_server();
         let mut parameters = Parameters::default();
         parameters.set_host("127.0.0.1").unwrap();
         parameters.set_port(port).unwrap();
@@ -567,11 +589,13 @@ mod tests {
         let connection = Connection::new(parameters).unwrap();
 
         let (result_sender, result_receiver) = mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = mpsc::sync_channel(0);
         let worker = thread::spawn(move || {
             let mut cursor = connection.cursor();
             let result = cursor.execute("SELECT 1");
             let after_timeout = connection.cursor().execute("SELECT 2");
             result_sender.send((result, after_timeout)).unwrap();
+            release_receiver.recv().unwrap();
         });
         query_received
             .recv_timeout(Duration::from_secs(2))
@@ -581,6 +605,14 @@ mod tests {
             .expect("timed out query did not return");
         assert_eq!(result, Err(CursorError::Timeout));
         assert_eq!(after_timeout, Err(CursorError::Closed));
+        assert_eq!(
+            disconnected
+                .recv_timeout(Duration::from_secs(2))
+                .expect("timed out connection remained open")
+                .unwrap(),
+            0
+        );
+        release_sender.send(()).unwrap();
         worker.join().unwrap();
     }
 }
