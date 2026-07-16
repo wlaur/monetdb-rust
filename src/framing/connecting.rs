@@ -87,7 +87,8 @@ struct ConnectionDeadline(Option<Instant>);
 
 impl ConnectionDeadline {
     fn new(timeout: Option<Duration>) -> Self {
-        Self(timeout.map(|timeout| Instant::now() + timeout))
+        let now = Instant::now();
+        Self(timeout.and_then(|timeout| now.checked_add(timeout)))
     }
 
     fn instant(self) -> Option<Instant> {

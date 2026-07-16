@@ -54,10 +54,13 @@ struct ActiveTimeouts {
 
 impl ActiveTimeouts {
     fn new(timeouts: Timeouts) -> Self {
+        let now = Instant::now();
         Self {
             read: timeouts.read,
             write: timeouts.write,
-            deadline: timeouts.operation.map(|timeout| Instant::now() + timeout),
+            deadline: timeouts
+                .operation
+                .and_then(|timeout| now.checked_add(timeout)),
         }
     }
 

@@ -8,7 +8,7 @@
 
 use array_macro::array;
 use std::mem;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use urlparser::{is_our_url, parse_any_url, url_from_parms};
 
@@ -1221,7 +1221,13 @@ impl Validated<'_> {
     fn valid_timeout(parm: Parm, seconds: i64) -> ParmResult<Option<Duration>> {
         match seconds {
             0 => Ok(None),
-            1.. => Ok(Some(Duration::from_secs(seconds as u64))),
+            1.. => {
+                let timeout = Duration::from_secs(seconds as u64);
+                if Instant::now().checked_add(timeout).is_none() {
+                    return Err(ParmError::InvalidValue(parm));
+                }
+                Ok(Some(timeout))
+            }
             _ => Err(ParmError::InvalidValue(parm)),
         }
     }
@@ -1334,6 +1340,23 @@ fn validation_accepts_explicit_infinite_timeouts_and_rejects_negative_values() {
         assert_eq!(timeout, None);
 
         parameters.set(parm, -1_i64).unwrap();
+        assert!(matches!(
+            parameters.validate(),
+            Err(ParmError::InvalidValue(rejected)) if rejected == parm
+        ));
+    }
+}
+
+#[test]
+fn validation_rejects_unrepresentable_timeout_deadlines() {
+    for parm in [
+        Parm::ConnectTimeout,
+        Parm::ReadTimeout,
+        Parm::WriteTimeout,
+        Parm::OperationTimeout,
+    ] {
+        let mut parameters = Parameters::default();
+        parameters.set(parm, i64::MAX).unwrap();
         assert!(matches!(
             parameters.validate(),
             Err(ParmError::InvalidValue(rejected)) if rejected == parm
