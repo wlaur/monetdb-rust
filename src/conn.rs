@@ -10,9 +10,11 @@ use std::{
     collections::HashMap,
     num::NonZeroUsize,
     sync::{
-        Arc, Mutex, TryLockError,
+        Arc, Condvar, Mutex, TryLockError, Weak,
         atomic::{self, AtomicBool, AtomicU8},
     },
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -46,6 +48,7 @@ pub(crate) struct Conn {
     closing: AtomicBool,
     operation_state: AtomicU8,
     control: Arc<SocketControl>,
+    operation_watchdog: OperationWatchdog,
     pub(crate) timeouts: Timeouts,
 }
 
@@ -58,6 +61,132 @@ struct Locked {
 const OPERATION_IDLE: u8 = 0;
 const OPERATION_ACTIVE: u8 = 1;
 const OPERATION_CANCELLED: u8 = 2;
+
+struct OperationWatchdog {
+    shared: Arc<WatchdogShared>,
+    worker: Option<JoinHandle<()>>,
+}
+
+struct WatchdogShared {
+    state: Mutex<WatchdogState>,
+    wake: Condvar,
+}
+
+#[derive(Default)]
+struct WatchdogState {
+    active: Option<(u64, Instant)>,
+    fired_token: u64,
+    next_token: u64,
+    stopped: bool,
+}
+
+impl OperationWatchdog {
+    fn new(control: &Arc<SocketControl>) -> Self {
+        let shared = Arc::new(WatchdogShared {
+            state: Mutex::new(WatchdogState::default()),
+            wake: Condvar::new(),
+        });
+        let worker_shared = Arc::clone(&shared);
+        let worker_control = Arc::downgrade(control);
+        let worker = thread::spawn(move || Self::run(worker_shared, worker_control));
+        Self {
+            shared,
+            worker: Some(worker),
+        }
+    }
+
+    fn run(shared: Arc<WatchdogShared>, control: Weak<SocketControl>) {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if state.stopped {
+                return;
+            }
+            let Some((token, deadline)) = state.active else {
+                state = shared
+                    .wake
+                    .wait(state)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                continue;
+            };
+            let now = Instant::now();
+            if now < deadline {
+                state = match shared.wake.wait_timeout(state, deadline - now) {
+                    Ok((state, _)) => state,
+                    Err(poisoned) => poisoned.into_inner().0,
+                };
+                continue;
+            }
+            if state.active.is_some_and(|(active, _)| active == token) {
+                state.active = None;
+                state.fired_token = token;
+                drop(state);
+                if let Some(control) = control.upgrade() {
+                    let _ = control.shutdown();
+                }
+                state = shared
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        }
+    }
+
+    fn arm(&self, timeout: Option<Duration>) -> Option<u64> {
+        let timeout = timeout?;
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.next_token = state.next_token.wrapping_add(1);
+        if state.next_token == 0 {
+            state.next_token = 1;
+        }
+        let token = state.next_token;
+        state.active = Some((token, Instant::now() + timeout));
+        state.fired_token = 0;
+        self.shared.wake.notify_one();
+        Some(token)
+    }
+
+    fn disarm(&self, token: Option<u64>) -> bool {
+        let Some(token) = token else {
+            return false;
+        };
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.active.is_some_and(|(active, _)| active == token) {
+            state.active = None;
+            self.shared.wake.notify_one();
+            false
+        } else {
+            state.fired_token == token
+        }
+    }
+}
+
+impl Drop for OperationWatchdog {
+    fn drop(&mut self) {
+        {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.stopped = true;
+            self.shared.wake.notify_one();
+        }
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
 
 impl Connection {
     /// Create a new connection based on the given [`Parameters`] object.
@@ -73,12 +202,14 @@ impl Connection {
             delayed,
         };
         let control = locked.sock.as_ref().expect("socket is present").control();
+        let operation_watchdog = OperationWatchdog::new(&control);
         let conn = Conn {
             locked: Mutex::new(locked),
             pending_closes: Mutex::new(Vec::new()),
             closing: AtomicBool::new(false),
             operation_state: AtomicU8::new(OPERATION_IDLE),
             control,
+            operation_watchdog,
             timeouts,
             reply_size,
             max_response_size,
@@ -312,6 +443,7 @@ impl Conn {
             return Err(CursorError::Poisoned);
         }
         sock.start_operation(timeouts);
+        let watchdog_token = self.operation_watchdog.arm(timeouts.operation);
         let pending_closes = match self.pending_closes.lock() {
             Ok(mut pending) => std::mem::take(&mut *pending),
             Err(poisoned) => {
@@ -324,12 +456,18 @@ impl Conn {
             delayed.add_xcommand_cleanup("close", result_id);
         }
         let result = f(state, delayed, sock);
+        let operation_timed_out = self.operation_watchdog.disarm(watchdog_token);
         let operation_state = self
             .operation_state
             .swap(OPERATION_IDLE, atomic::Ordering::AcqRel);
         if operation_state == OPERATION_CANCELLED {
             self.closing.store(true, atomic::Ordering::Release);
             return Err(CursorError::Cancelled);
+        }
+        if operation_timed_out {
+            self.closing.store(true, atomic::Ordering::Release);
+            let _ = self.control.shutdown();
+            return Err(CursorError::Timeout);
         }
         match result {
             Ok(sock) => {
@@ -764,6 +902,7 @@ mod tests {
         let mut parameters = test_parameters(port);
         parameters.set_read_timeout(30).unwrap();
         parameters.set_write_timeout(1).unwrap();
+        parameters.set_operation_timeout(2).unwrap();
         let connection = Connection::new(parameters).unwrap();
         let (result_sender, result_receiver) = mpsc::sync_channel(1);
         let (release_sender, release_receiver) = mpsc::sync_channel(0);
