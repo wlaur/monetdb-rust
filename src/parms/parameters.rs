@@ -672,9 +672,11 @@ impl Parameters {
     ///
     /// Supports `monetdb://`, `monetdbs://` and `mapi:monetdb://` URLs.
     pub fn apply_url(&mut self, url: &str) -> ParmResult<()> {
-        self.boundary();
-        parse_any_url(self, url)?;
-        self.boundary();
+        let mut updated = self.clone();
+        updated.boundary();
+        parse_any_url(&mut updated, url)?;
+        updated.boundary();
+        *self = updated;
         Ok(())
     }
 
@@ -1327,6 +1329,20 @@ fn failed_assignments_and_timezone_resets_do_not_change_parameter_state() {
         parameters.validate().unwrap().connect_timezone_seconds,
         None
     );
+}
+
+#[test]
+fn failed_url_updates_do_not_change_parameter_state() {
+    let mut parameters = Parameters::default();
+    parameters.set_host("original.example").unwrap();
+    let original = parameters.clone();
+
+    assert!(
+        parameters
+            .apply_url("monetdb://replacement.example/database?unknown=value")
+            .is_err()
+    );
+    assert_eq!(parameters, original);
 }
 
 #[test]
