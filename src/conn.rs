@@ -179,30 +179,40 @@ impl Connection {
 
     /// Enable or disable server-side autocommit for this connection.
     pub fn set_autocommit(&self, enabled: bool) -> CursorResult<()> {
+        self.set_autocommit_with_timeouts(enabled, self.0.timeouts)
+    }
+
+    /// Enable or disable server-side autocommit using the supplied timeouts.
+    pub fn set_autocommit_with_timeouts(
+        &self,
+        enabled: bool,
+        timeouts: Timeouts,
+    ) -> CursorResult<()> {
         let mut response_error = None;
-        self.0.run_locked(|state, delayed, mut sock| {
-            let mut response = Vec::new();
-            sock = delayed.send_delayed_plus(
-                sock,
-                &[format!("Xauto_commit {}", i32::from(enabled)).as_bytes()],
-            )?;
-            sock = delayed.recv_delayed(sock, &mut response, self.0.max_response_size)?;
-            response.clear();
-            sock = MapiReader::to_limited(sock, &mut response, self.0.max_response_size)?;
-            let expected = if enabled { b"&4 t" } else { b"&4 f" };
-            if !response.is_empty() && !response.starts_with(expected) {
-                if let Some(message) = crate::cursor::replies::server_error_message(&response) {
-                    response_error = Some(CursorError::Server(message));
-                } else {
-                    response_error = Some(CursorError::BadReply(
-                        crate::cursor::replies::BadReply::UnexpectedHeader(response.into()),
-                    ));
+        self.0
+            .run_locked_with_timeouts(timeouts, |state, delayed, mut sock| {
+                let mut response = Vec::new();
+                sock = delayed.send_delayed_plus(
+                    sock,
+                    &[format!("Xauto_commit {}", i32::from(enabled)).as_bytes()],
+                )?;
+                sock = delayed.recv_delayed(sock, &mut response, self.0.max_response_size)?;
+                response.clear();
+                sock = MapiReader::to_limited(sock, &mut response, self.0.max_response_size)?;
+                let expected = if enabled { b"&4 t" } else { b"&4 f" };
+                if !response.is_empty() && !response.starts_with(expected) {
+                    if let Some(message) = crate::cursor::replies::server_error_message(&response) {
+                        response_error = Some(CursorError::Server(message));
+                    } else {
+                        response_error = Some(CursorError::BadReply(
+                            crate::cursor::replies::BadReply::UnexpectedHeader(response.into()),
+                        ));
+                    }
+                    return Ok(sock);
                 }
-                return Ok(sock);
-            }
-            state.autocommit = enabled;
-            Ok(sock)
-        })?;
+                state.autocommit = enabled;
+                Ok(sock)
+            })?;
         match response_error {
             Some(error) => Err(error),
             None => Ok(()),
