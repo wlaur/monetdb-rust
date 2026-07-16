@@ -375,12 +375,14 @@ impl ServerSock {
     pub(crate) fn set_connection_deadline(&self, timeouts: Timeouts, deadline: Option<Instant>) {
         self.control.set_connection_deadline(timeouts, deadline);
     }
+}
 
-    pub(crate) fn set_socket_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+impl ServerSockTrait for ServerSock {
+    fn set_socket_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         self.inner.set_socket_read_timeout(timeout)
     }
 
-    pub(crate) fn set_socket_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+    fn set_socket_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         self.inner.set_socket_write_timeout(timeout)
     }
 }
