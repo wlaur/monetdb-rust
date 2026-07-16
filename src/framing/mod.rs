@@ -27,6 +27,10 @@ use crate::{conn::InnerServerMetadata, framing::connecting::Endian};
 pub const BLOCKSIZE: usize = 8190;
 const READ_BUFFER_SIZE: usize = 64 * 1024;
 
+/// Largest whole-second timeout that remains finite on every supported socket API.
+pub const MAX_TIMEOUT_SECONDS: i64 = (u32::MAX as i64 - 1) / 1000;
+const MAX_TIMEOUT: Duration = Duration::from_secs(MAX_TIMEOUT_SECONDS as u64);
+
 /// Idle socket timeouts and the absolute timeout for one post-login operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Timeouts {
@@ -99,11 +103,18 @@ impl ActiveTimeouts {
             }
             None => None,
         };
-        Ok(match (idle, remaining) {
+        let limit = match (idle, remaining) {
             (Some(idle), Some(remaining)) => Some(idle.min(remaining)),
             (Some(idle), None) => Some(idle),
             (None, remaining) => remaining,
-        })
+        };
+        if limit.is_some_and(|limit| limit > MAX_TIMEOUT) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "timeout exceeds the portable socket limit",
+            ));
+        }
+        Ok(limit)
     }
 }
 
@@ -578,6 +589,22 @@ mod tests {
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::TimedOut
+        );
+    }
+
+    #[test]
+    fn active_timeouts_reject_values_that_windows_would_make_infinite() {
+        let active = super::ActiveTimeouts::new(super::Timeouts {
+            read: Some(std::time::Duration::from_secs(
+                (super::MAX_TIMEOUT_SECONDS + 1) as u64,
+            )),
+            write: None,
+            operation: None,
+        });
+
+        assert_eq!(
+            active.read_limit().unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
         );
     }
 }
