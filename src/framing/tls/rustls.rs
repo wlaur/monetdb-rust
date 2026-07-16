@@ -6,19 +6,14 @@
 //
 // Copyright 2024 MonetDB Foundation
 
-use std::{
-    fmt,
-    fs::File,
-    io::{self, BufReader},
-    sync::Arc,
-};
+use std::{fmt, io, sync::Arc};
 
 use rustls::{
     CertificateError, ClientConfig, ClientConnection, DigitallySignedStruct, Error, RootCertStore,
     SignatureScheme, StreamOwned,
     client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
     crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature},
-    pki_types::{CertificateDer, ServerName, UnixTime},
+    pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime, pem::PemObject},
 };
 use rustls_platform_verifier::BuilderVerifierExt;
 use sha2::{Digest, Sha256};
@@ -79,14 +74,16 @@ fn wrap_inner(
     Ok(ServerSock::wrap(wrapped, control))
 }
 
-fn load_certificates(path: &str) -> Result<Vec<CertificateDer<'static>>, io::Error> {
-    let mut reader = BufReader::new(File::open(path)?);
-    let certificates = rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?;
+fn load_certificates(
+    path: &str,
+) -> Result<Vec<CertificateDer<'static>>, Box<dyn std::error::Error>> {
+    let certificates = CertificateDer::pem_file_iter(path)?.collect::<Result<Vec<_>, _>>()?;
     if certificates.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("certificate file {path:?} contains no certificates"),
-        ));
+        )
+        .into());
     }
     Ok(certificates)
 }
@@ -102,14 +99,7 @@ fn load_roots(path: &str) -> Result<RootCertStore, Box<dyn std::error::Error>> {
 fn load_private_key(
     path: &str,
 ) -> Result<rustls::pki_types::PrivateKeyDer<'static>, Box<dyn std::error::Error>> {
-    let mut reader = BufReader::new(File::open(path)?);
-    rustls_pemfile::private_key(&mut reader)?.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("private key file {path:?} contains no private key"),
-        )
-        .into()
-    })
+    PrivateKeyDer::from_pem_file(path).map_err(Into::into)
 }
 
 struct HashVerifier {
