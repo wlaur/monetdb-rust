@@ -82,9 +82,21 @@ impl ActiveTimeouts {
 
     fn limit(self, idle: Option<Duration>) -> io::Result<Option<Duration>> {
         let remaining = match self.deadline {
-            Some(deadline) => Some(deadline.checked_duration_since(Instant::now()).ok_or_else(
-                || io::Error::new(io::ErrorKind::TimedOut, "operation deadline expired"),
-            )?),
+            Some(deadline) => {
+                let remaining =
+                    deadline
+                        .checked_duration_since(Instant::now())
+                        .ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::TimedOut, "operation deadline expired")
+                        })?;
+                if remaining.is_zero() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "operation deadline expired",
+                    ));
+                }
+                Some(remaining)
+            }
             None => None,
         };
         Ok(match (idle, remaining) {
@@ -385,23 +397,31 @@ impl io::Read for ServerSock {
 impl io::Write for ServerSock {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.control.before_write()?;
-        self.inner.write(buf).map_err(|error| {
-            if error.kind() == io::ErrorKind::WouldBlock && self.control.write_timeout_active() {
-                io::Error::new(io::ErrorKind::TimedOut, error)
-            } else {
-                error
-            }
-        })
+        self.inner
+            .write(buf)
+            .map_err(|error| normalize_timeout(error, self.control.write_timeout_active()))
     }
 
     fn flush(&mut self) -> io::Result<()> {
         self.control.before_write()?;
-        self.inner.flush()
+        self.inner
+            .flush()
+            .map_err(|error| normalize_timeout(error, self.control.write_timeout_active()))
     }
 
     fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
         self.control.before_write()?;
-        self.inner.write_vectored(bufs)
+        self.inner
+            .write_vectored(bufs)
+            .map_err(|error| normalize_timeout(error, self.control.write_timeout_active()))
+    }
+}
+
+fn normalize_timeout(error: io::Error, timeout_active: bool) -> io::Error {
+    if error.kind() == io::ErrorKind::WouldBlock && timeout_active {
+        io::Error::new(io::ErrorKind::TimedOut, error)
+    } else {
+        error
     }
 }
 
@@ -470,6 +490,31 @@ mod tests {
 
     impl ServerSockTrait for InterruptedOnceSock {}
 
+    #[derive(Debug)]
+    struct WouldBlockSock;
+
+    impl Read for WouldBlockSock {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::WouldBlock.into())
+        }
+    }
+
+    impl Write for WouldBlockSock {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::WouldBlock.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::ErrorKind::WouldBlock.into())
+        }
+
+        fn write_vectored(&mut self, _bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
+            Err(io::ErrorKind::WouldBlock.into())
+        }
+    }
+
+    impl ServerSockTrait for WouldBlockSock {}
+
     #[test]
     fn read_ahead_preserves_the_next_message() {
         let mut data = Vec::new();
@@ -505,5 +550,30 @@ mod tests {
         sock.read_to_end(&mut output).unwrap();
 
         assert_eq!(output, b"actual wire data");
+    }
+
+    #[test]
+    fn all_writes_report_active_socket_timeouts_consistently() {
+        let control = Arc::new(super::SocketControl::new(
+            super::RawSocket::Test,
+            super::ActiveTimeouts::new(super::Timeouts {
+                read: None,
+                write: Some(std::time::Duration::from_secs(1)),
+                operation: None,
+            }),
+        ));
+        let mut sock = ServerSock::with_control(WouldBlockSock, control);
+
+        assert_eq!(
+            sock.write(b"data").unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(sock.flush().unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert_eq!(
+            sock.write_vectored(&[io::IoSlice::new(b"data")])
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
     }
 }
