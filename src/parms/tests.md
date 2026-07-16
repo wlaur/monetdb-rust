@@ -412,8 +412,8 @@ EXPECT password=?
 
 ```test
 EXPECT language=sql
-ACCEPT monetdb:///?language=msql
-EXPECT language=msql
+REJECT monetdb:///?language=msql
+SET language=sql
 ACCEPT monetdb:///?language=sql
 EXPECT language=sql
 ```
@@ -1417,19 +1417,13 @@ EXPECT connect_unix=/path/to/sock
 EXPECT connect_tcp=
 ```
 
-Language is supported
+Only the SQL language is supported
 
 ```test
 SET language=sql
-ACCEPT mapi:monetdb://localhost:12345?language=mal
-EXPECT host=localhost
-EXPECT sock=
-EXPECT language=mal
+REJECT mapi:monetdb://localhost:12345?language=mal
 SET language=sql
-ACCEPT mapi:monetdb:///path/to/sock?language=mal
-EXPECT host=
-EXPECT sock=/path/to/sock
-EXPECT language=mal
+REJECT mapi:monetdb:///path/to/sock?language=mal
 ```
 
 No percent decoding is performed

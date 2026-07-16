@@ -410,23 +410,19 @@ fn challenge_response(
     response.push(':'); // after the handshake options
 
     if chal.clientinfo && parms.client_info {
-        if parms.language == "sql" {
-            let mut info = ClientInfo::default();
-            if !parms.client_application.is_empty() {
-                info.application_name = Cow::Owned(parms.client_application.to_string());
-            }
-            if !parms.client_remark.is_empty() {
-                info.client_remark = Cow::Owned(parms.client_remark.to_string());
-            }
-            write!(delayed.buffer, "{}", SqlForm(&info)).unwrap();
-            delayed.buffer.end();
-            delayed.responses.push(ExpectedResponse {
-                description: "ClientInfo".into(),
-                ignore_server_error: true,
-            });
-        } else if parms.language == "mal" || parms.language == "msql" {
-            todo!()
+        let mut info = ClientInfo::default();
+        if !parms.client_application.is_empty() {
+            info.application_name = Cow::Owned(parms.client_application.to_string());
         }
+        if !parms.client_remark.is_empty() {
+            info.client_remark = Cow::Owned(parms.client_remark.to_string());
+        }
+        write!(delayed.buffer, "{}", SqlForm(&info)).unwrap();
+        delayed.buffer.end();
+        delayed.responses.push(ExpectedResponse {
+            description: "ClientInfo".into(),
+            ignore_server_error: true,
+        });
     }
 
     Ok((state, delayed))

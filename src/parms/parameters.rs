@@ -415,13 +415,7 @@ impl From<i64> for Value {
 
 impl From<isize> for Value {
     fn from(value: isize) -> Self {
-        Value::Int(value.try_into().unwrap())
-    }
-}
-
-impl From<usize> for Value {
-    fn from(value: usize) -> Self {
-        Value::Int(value.try_into().unwrap())
+        Value::Int(value as i64)
     }
 }
 
@@ -1025,6 +1019,9 @@ impl Validated<'_> {
         if raw_client_info && raw_client_remark.contains('\n') {
             return Err(ClientInfoNewline(ClientRemark));
         }
+        if raw_language != "sql" {
+            return Err(InvalidValue(Language));
+        }
         // Virtual parameters
 
         // connect_port and connect_binary have already been determined above
@@ -1210,4 +1207,16 @@ fn validation_rejects_non_positive_response_limit() {
         parameters.validate(),
         Err(ParmError::InvalidValue(Parm::MaxResponseSize))
     ));
+}
+
+#[test]
+fn validation_rejects_non_sql_languages() {
+    for language in ["mal", "msql", "other"] {
+        let mut parameters = Parameters::default();
+        parameters.set_language(language).unwrap();
+        assert!(matches!(
+            parameters.validate(),
+            Err(ParmError::InvalidValue(Parm::Language))
+        ));
+    }
 }
