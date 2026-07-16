@@ -53,9 +53,9 @@ pub(crate) fn response_autocommit(response: &[u8]) -> Option<bool> {
     response
         .split(|byte| *byte == b'\n')
         .filter_map(|line| {
-            if line.starts_with(b"&4 f") {
+            if line == b"&4 f" {
                 Some(false)
-            } else if line.starts_with(b"&4 t") {
+            } else if line == b"&4 t" {
                 Some(true)
             } else {
                 None
@@ -457,9 +457,9 @@ impl ReplyParser {
 
     fn parse_autocommit_status(mut buf: ReplyBuf) -> RResult<ReplyParser> {
         let line = buf.split_str(b'\n', "header line")?.trim_ascii();
-        let auto_commit = if line.starts_with("&4 f") {
+        let auto_commit = if line == "&4 f" {
             false
-        } else if line.starts_with("&4 t") {
+        } else if line == "&4 t" {
             true
         } else {
             return Err(BadReply::InvalidHeader(format!(
@@ -660,6 +660,8 @@ mod tests {
         assert_eq!(response_autocommit(b"&4 f\n"), Some(false));
         assert_eq!(response_autocommit(b"&4 f\n&4 t\n"), Some(true));
         assert_eq!(response_autocommit(b"[ \"&4 f\"\t]\n"), None);
+        assert_eq!(response_autocommit(b"&4 false\n"), None);
+        assert!(ReplyParser::new(b"&4 false\n".to_vec()).is_err());
     }
 
     #[test]
