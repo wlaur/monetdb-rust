@@ -62,6 +62,12 @@ pub enum Parm {
     // Specific to this crate
     #[enumeration(rename = "connect_timeout")]
     ConnectTimeout,
+    #[enumeration(rename = "read_timeout")]
+    ReadTimeout,
+    #[enumeration(rename = "write_timeout")]
+    WriteTimeout,
+    #[enumeration(rename = "operation_timeout")]
+    OperationTimeout,
     #[enumeration(rename = "client_info")]
     ClientInfo,
     #[enumeration(rename = "client_application")]
@@ -103,6 +109,9 @@ impl Parm {
             Parm::SockDir => "sockdir",
             Parm::Timezone => "timezone",
             Parm::ConnectTimeout => "connect_timeout",
+            Parm::ReadTimeout => "read_timeout",
+            Parm::WriteTimeout => "write_timeout",
+            Parm::OperationTimeout => "operation_timeout",
             Parm::ClientInfo => "client_info",
             Parm::ClientApplication => "client_application",
             Parm::ClientRemark => "client_remark",
@@ -157,7 +166,8 @@ impl Parm {
         use ParmType::*;
         match self {
             Tls | Autocommit | ClientInfo => Bool,
-            Port | ReplySize | Timezone | MaxPrefetch | ConnectTimeout | MaxResponseSize => Int,
+            Port | ReplySize | Timezone | MaxPrefetch | ConnectTimeout | ReadTimeout
+            | WriteTimeout | OperationTimeout | MaxResponseSize => Int,
             _ => Str,
         }
     }
@@ -200,6 +210,12 @@ fn test_parm_names() {
     assert_eq!(Parm::from_str("sockdir"), Ok(Parm::SockDir));
     assert_eq!(Parm::from_str("timezone"), Ok(Parm::Timezone));
     assert_eq!(Parm::from_str("connect_timeout"), Ok(Parm::ConnectTimeout));
+    assert_eq!(Parm::from_str("read_timeout"), Ok(Parm::ReadTimeout));
+    assert_eq!(Parm::from_str("write_timeout"), Ok(Parm::WriteTimeout));
+    assert_eq!(
+        Parm::from_str("operation_timeout"),
+        Ok(Parm::OperationTimeout)
+    );
     assert_eq!(Parm::from_str("client_info"), Ok(Parm::ClientInfo));
     assert_eq!(
         Parm::from_str("client_application"),
@@ -422,7 +438,7 @@ impl From<isize> for Value {
 /// If you want to create a table indexed by [`Parm`], the table must
 /// have at least this number of elements. Use [`Parm::index`] to convert
 /// Parms to usizes.
-pub const PARM_TABLE_SIZE: usize = 31;
+pub const PARM_TABLE_SIZE: usize = 34;
 
 #[test]
 fn test_parm_table_size() {
@@ -500,6 +516,12 @@ const fn default_parameter_value_by_index(idx: usize) -> Value {
         Value::from_static("on") // we can't yet, but we'd like to
     } else if idx == ClientInfo.index() {
         Value::Bool(true)
+    } else if idx == ConnectTimeout.index() {
+        Value::Int(30)
+    } else if idx == ReadTimeout.index() || idx == WriteTimeout.index() {
+        Value::Int(60)
+    } else if idx == OperationTimeout.index() {
+        Value::Int(300)
     } else if idx == MaxResponseSize.index() {
         Value::Int(1024 * 1024 * 1024)
     } else {
@@ -818,12 +840,55 @@ impl Parameters {
         Ok(self)
     }
 
+    /// Set the absolute connection-establishment timeout in seconds.
+    /// Zero explicitly disables the timeout; negative values fail validation.
     pub fn set_connect_timeout(&mut self, value: impl Into<i64>) -> ParmResult<()> {
         self.set(Parm::ConnectTimeout, value.into())
     }
 
+    /// Set the absolute connection-establishment timeout in seconds.
+    /// Zero explicitly disables the timeout; negative values fail validation.
     pub fn with_connect_timeout(mut self, value: impl Into<i64>) -> ParmResult<Parameters> {
         self.set_connect_timeout(value)?;
+        Ok(self)
+    }
+
+    /// Set the maximum idle time for one socket read in seconds.
+    /// Zero explicitly disables the timeout; negative values fail validation.
+    pub fn set_read_timeout(&mut self, value: impl Into<i64>) -> ParmResult<()> {
+        self.set(Parm::ReadTimeout, value.into())
+    }
+
+    /// Set the maximum idle time for one socket read in seconds.
+    /// Zero explicitly disables the timeout; negative values fail validation.
+    pub fn with_read_timeout(mut self, value: impl Into<i64>) -> ParmResult<Parameters> {
+        self.set_read_timeout(value)?;
+        Ok(self)
+    }
+
+    /// Set the maximum idle time for one socket write in seconds.
+    /// Zero explicitly disables the timeout; negative values fail validation.
+    pub fn set_write_timeout(&mut self, value: impl Into<i64>) -> ParmResult<()> {
+        self.set(Parm::WriteTimeout, value.into())
+    }
+
+    /// Set the maximum idle time for one socket write in seconds.
+    /// Zero explicitly disables the timeout; negative values fail validation.
+    pub fn with_write_timeout(mut self, value: impl Into<i64>) -> ParmResult<Parameters> {
+        self.set_write_timeout(value)?;
+        Ok(self)
+    }
+
+    /// Set the absolute deadline for one post-login operation in seconds.
+    /// Zero explicitly disables the timeout; negative values fail validation.
+    pub fn set_operation_timeout(&mut self, value: impl Into<i64>) -> ParmResult<()> {
+        self.set(Parm::OperationTimeout, value.into())
+    }
+
+    /// Set the absolute deadline for one post-login operation in seconds.
+    /// Zero explicitly disables the timeout; negative values fail validation.
+    pub fn with_operation_timeout(mut self, value: impl Into<i64>) -> ParmResult<Parameters> {
+        self.set_operation_timeout(value)?;
         Ok(self)
     }
 
@@ -912,6 +977,9 @@ pub struct Validated<'a> {
     pub connect_clientcert: Cow<'a, str>,
     pub connect_binary: u16,
     pub connect_timeout: Option<Duration>,
+    pub read_timeout: Option<Duration>,
+    pub write_timeout: Option<Duration>,
+    pub operation_timeout: Option<Duration>,
     pub max_response_size: usize,
 }
 
@@ -941,7 +1009,10 @@ impl Validated<'_> {
 
         let raw_timezone: i64 = parms.get_int(Timezone)?;
         let raw_binary: &Value = parms.get(Binary);
-        let raw_connect_timeout: Option<i64> = parms.get(ConnectTimeout).int_value();
+        let raw_connect_timeout = parms.get_int(ConnectTimeout)?;
+        let raw_read_timeout = parms.get_int(ReadTimeout)?;
+        let raw_write_timeout = parms.get_int(WriteTimeout)?;
+        let raw_operation_timeout = parms.get_int(OperationTimeout)?;
         let raw_max_response_size = parms.get_int(MaxResponseSize)?;
 
         let raw_client_info = parms.get_bool(ClientInfo)?;
@@ -1082,10 +1153,10 @@ impl Validated<'_> {
             None
         };
 
-        let connect_timeout = match raw_connect_timeout {
-            Some(i @ 1..) => Some(Duration::from_secs(i as u64)),
-            _ => None,
-        };
+        let connect_timeout = Self::valid_timeout(ConnectTimeout, raw_connect_timeout)?;
+        let read_timeout = Self::valid_timeout(ReadTimeout, raw_read_timeout)?;
+        let write_timeout = Self::valid_timeout(WriteTimeout, raw_write_timeout)?;
+        let operation_timeout = Self::valid_timeout(OperationTimeout, raw_operation_timeout)?;
 
         let replysize = usize::try_from(raw_replysize)
             .ok()
@@ -1109,6 +1180,9 @@ impl Validated<'_> {
             replysize,
             schema: raw_schema,
             connect_timeout,
+            read_timeout,
+            write_timeout,
+            operation_timeout,
             max_response_size,
             client_info: raw_client_info,
             client_application: raw_client_application,
@@ -1142,6 +1216,14 @@ impl Validated<'_> {
         }
 
         Ok(name)
+    }
+
+    fn valid_timeout(parm: Parm, seconds: i64) -> ParmResult<Option<Duration>> {
+        match seconds {
+            0 => Ok(None),
+            1.. => Ok(Some(Duration::from_secs(seconds as u64))),
+            _ => Err(ParmError::InvalidValue(parm)),
+        }
     }
 
     fn valid_certhash(certhash: &str) -> ParmResult<String> {
@@ -1217,6 +1299,44 @@ fn validation_rejects_non_sql_languages() {
         assert!(matches!(
             parameters.validate(),
             Err(ParmError::InvalidValue(Parm::Language))
+        ));
+    }
+}
+
+#[test]
+fn validation_applies_finite_timeout_defaults() {
+    let parameters = Parameters::default();
+    let validated = parameters.validate().unwrap();
+    assert_eq!(validated.connect_timeout, Some(Duration::from_secs(30)));
+    assert_eq!(validated.read_timeout, Some(Duration::from_secs(60)));
+    assert_eq!(validated.write_timeout, Some(Duration::from_secs(60)));
+    assert_eq!(validated.operation_timeout, Some(Duration::from_secs(300)));
+}
+
+#[test]
+fn validation_accepts_explicit_infinite_timeouts_and_rejects_negative_values() {
+    for parm in [
+        Parm::ConnectTimeout,
+        Parm::ReadTimeout,
+        Parm::WriteTimeout,
+        Parm::OperationTimeout,
+    ] {
+        let mut parameters = Parameters::default();
+        parameters.set(parm, 0_i64).unwrap();
+        let validated = parameters.validate().unwrap();
+        let timeout = match parm {
+            Parm::ConnectTimeout => validated.connect_timeout,
+            Parm::ReadTimeout => validated.read_timeout,
+            Parm::WriteTimeout => validated.write_timeout,
+            Parm::OperationTimeout => validated.operation_timeout,
+            _ => unreachable!(),
+        };
+        assert_eq!(timeout, None);
+
+        parameters.set(parm, -1_i64).unwrap();
+        assert!(matches!(
+            parameters.validate(),
+            Err(ParmError::InvalidValue(rejected)) if rejected == parm
         ));
     }
 }

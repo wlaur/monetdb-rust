@@ -1451,3 +1451,22 @@ ACCEPT mapi:monetdb://localhost:12345/db?l%61nguage=mal
 EXPECT language=sql
 ACCEPT mapi:monetdb://localhost:12345/db?_l%61nguage=mal
 ```
+
+### Timeouts
+
+Timeouts are integer seconds. Zero explicitly requests no timeout.
+
+```test
+EXPECT connect_timeout=30
+EXPECT read_timeout=60
+EXPECT write_timeout=60
+EXPECT operation_timeout=300
+ACCEPT monetdb://localhost/demo?connect_timeout=1&read_timeout=2&write_timeout=3&operation_timeout=4
+EXPECT connect_timeout=1
+EXPECT read_timeout=2
+EXPECT write_timeout=3
+EXPECT operation_timeout=4
+ACCEPT monetdb://localhost/demo?operation_timeout=0
+EXPECT operation_timeout=0
+REJECT monetdb://localhost/demo?read_timeout=-1
+```
