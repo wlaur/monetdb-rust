@@ -131,6 +131,9 @@ where
         .spawn(move || {
             let _ = sender.send(operation());
         })?;
+    // Standard-library DNS and blocking connect calls cannot be cancelled.
+    // On timeout their one worker may outlive this call, but it owns no shared
+    // connection state and exits when the underlying OS operation completes.
     match receiver.recv_timeout(remaining) {
         Ok(result) => result.map_err(Into::into),
         Err(mpsc::RecvTimeoutError::Timeout) => Err(ConnectError::Timeout),

@@ -236,7 +236,12 @@ impl FramingError {
 
 impl fmt::Display for FramingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.to_str().fmt(f)
+        match self {
+            Self::InvalidHeaderLength(length) => {
+                write!(f, "network layer: invalid block header length {length}")
+            }
+            _ => self.to_str().fmt(f),
+        }
     }
 }
 
@@ -244,7 +249,7 @@ pub type FramingResult<T> = Result<T, FramingError>;
 
 impl From<FramingError> for io::Error {
     fn from(value: FramingError) -> Self {
-        io::Error::new(io::ErrorKind::InvalidData, value.to_str())
+        io::Error::new(io::ErrorKind::InvalidData, value)
     }
 }
 
@@ -613,6 +618,19 @@ mod tests {
             self.timeout_updates.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
+    }
+
+    #[test]
+    fn invalid_header_length_display_preserves_the_length() {
+        let error = super::FramingError::InvalidHeaderLength(7);
+        assert_eq!(
+            error.to_string(),
+            "network layer: invalid block header length 7"
+        );
+        assert_eq!(
+            io::Error::from(error).to_string(),
+            "network layer: invalid block header length 7"
+        );
     }
 
     #[test]
