@@ -38,6 +38,27 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Wait for MonetDB to accept connections
+        run: |
+          python - <<'PY'
+          import socket
+          import time
+
+          last = "server closed the connection without a challenge"
+          for attempt in range(60):
+              try:
+                  with socket.create_connection(("monetdb", 50000), timeout=2) as connection:
+                      connection.settimeout(2)
+                      if connection.recv(2):
+                          print(f"MonetDB ready after {attempt + 1} attempts")
+                          break
+              except OSError as exc:
+                  last = exc
+                  time.sleep(2)
+          else:
+              raise SystemExit(f"MonetDB never became ready: {last}")
+          PY
+
       - run: cargo test --test ci
       - run: cargo test --test ci --no-default-features
       - run: cargo test --test ci --all-features

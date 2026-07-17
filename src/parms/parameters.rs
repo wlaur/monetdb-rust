@@ -518,12 +518,48 @@ fn test_parm_table_size() {
 /// set. When [`Parameters::boundary`] is called and only one has been touched,
 /// the other is cleared. This happens for example before and after parsing a
 /// URL.
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(PartialEq, Eq, Clone)]
 pub struct Parameters {
     parms: [Value; PARM_TABLE_SIZE],
     user_changed: bool,
     password_changed: bool,
     timezone_set: bool,
+}
+
+struct Redacted;
+
+impl fmt::Debug for Redacted {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("<redacted>")
+    }
+}
+
+struct ParameterMap<'a>(&'a Parameters);
+
+impl fmt::Debug for ParameterMap<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut map = formatter.debug_map();
+        for parm in Parm::iter() {
+            if parm.is_sensitive() {
+                map.entry(&parm, &Redacted);
+            } else {
+                map.entry(&parm, self.0.get(parm));
+            }
+        }
+        map.finish()
+    }
+}
+
+impl fmt::Debug for Parameters {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Parameters")
+            .field("parms", &ParameterMap(self))
+            .field("user_changed", &self.user_changed)
+            .field("password_changed", &self.password_changed)
+            .field("timezone_set", &self.timezone_set)
+            .finish()
+    }
 }
 
 impl Default for Parameters {
@@ -1022,7 +1058,6 @@ pub enum TlsVerify {
 /// For example, based on the combination of `host`, `port`, `database` and
 /// `sock` it knows whether a connection must be made to a Unix Domain socket, a
 /// TCP socket or both.
-#[derive(Debug)]
 pub struct Validated<'a> {
     pub database: Cow<'a, str>,
     pub tls: bool,
@@ -1051,6 +1086,41 @@ pub struct Validated<'a> {
     pub write_timeout: Option<Duration>,
     pub operation_timeout: Option<Duration>,
     pub max_response_size: usize,
+}
+
+impl fmt::Debug for Validated<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Validated")
+            .field("database", &self.database)
+            .field("tls", &self.tls)
+            .field("user", &Redacted)
+            .field("password", &Redacted)
+            .field("autocommit", &self.autocommit)
+            .field("cert", &self.cert)
+            .field("language", &self.language)
+            .field("replysize", &self.replysize)
+            .field("schema", &self.schema)
+            .field("client_info", &self.client_info)
+            .field("client_application", &self.client_application)
+            .field("client_remark", &self.client_remark)
+            .field("connect_timezone_seconds", &self.connect_timezone_seconds)
+            .field("connect_scan", &self.connect_scan)
+            .field("connect_unix", &self.connect_unix)
+            .field("connect_tcp", &self.connect_tcp)
+            .field("connect_port", &self.connect_port)
+            .field("connect_tls_verify", &self.connect_tls_verify)
+            .field("connect_certhash_digits", &self.connect_certhash_digits)
+            .field("connect_clientkey", &self.connect_clientkey)
+            .field("connect_clientcert", &self.connect_clientcert)
+            .field("connect_binary", &self.connect_binary)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("read_timeout", &self.read_timeout)
+            .field("write_timeout", &self.write_timeout)
+            .field("operation_timeout", &self.operation_timeout)
+            .field("max_response_size", &self.max_response_size)
+            .finish()
+    }
 }
 
 impl Validated<'_> {
@@ -1344,6 +1414,22 @@ fn validation_rejects_non_positive_reply_sizes() {
             parameters.validate(),
             Err(ParmError::InvalidValue(Parm::ReplySize))
         ));
+    }
+}
+
+#[test]
+fn debug_output_redacts_credentials() {
+    let mut parameters = Parameters::default();
+    parameters.set_user("debug-user").unwrap();
+    parameters.set_password("debug-password").unwrap();
+
+    for rendered in [
+        format!("{parameters:?}"),
+        format!("{:?}", parameters.validate().unwrap()),
+    ] {
+        assert!(!rendered.contains("debug-user"));
+        assert!(!rendered.contains("debug-password"));
+        assert!(rendered.contains("<redacted>"));
     }
 }
 

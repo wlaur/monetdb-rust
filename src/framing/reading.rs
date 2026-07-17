@@ -121,6 +121,15 @@ impl<R: Read> MapiReader<R> {
     pub fn to_limited(rd: R, buffer: &mut Vec<u8>, limit: usize) -> io::Result<R> {
         let mut reader = Self::new(rd);
         (&mut reader).take(limit as u64).read_to_end(buffer)?;
+        if !matches!(reader.state, BlockState::End) {
+            let mut extra = [0];
+            if reader.read(&mut extra)? != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "incoming message too long",
+                ));
+            }
+        }
         if let BlockState::End = reader.state {
             reader.finish()
         } else {
@@ -134,6 +143,15 @@ impl<R: Read> MapiReader<R> {
     pub fn to_limited_string(rd: R, buffer: &mut String, limit: usize) -> io::Result<R> {
         let mut reader = Self::new(rd);
         (&mut reader).take(limit as u64).read_to_string(buffer)?;
+        if !matches!(reader.state, BlockState::End) {
+            let mut extra = [0];
+            if reader.read(&mut extra)? != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "incoming message too long",
+                ));
+            }
+        }
         if let BlockState::End = reader.state {
             reader.finish()
         } else {
@@ -149,7 +167,10 @@ impl<R: Read> MapiReader<R> {
 mod tests {
     use std::io::{Cursor, Read};
 
-    use crate::{framing::blockstate::Header, util::referencedata::ReferenceData};
+    use crate::{
+        framing::{BLOCKSIZE, blockstate::Header},
+        util::referencedata::ReferenceData,
+    };
 
     use super::MapiReader;
 
@@ -204,5 +225,18 @@ mod tests {
         let mut message = String::new();
         rd.read_to_string(&mut message).unwrap();
         assert_eq!(message, "monetdb");
+    }
+
+    #[test]
+    fn exact_limit_accepts_an_empty_final_block() {
+        let mut wire = Vec::new();
+        wire.extend_from_slice(Header::new(BLOCKSIZE, false).as_bytes());
+        wire.extend(std::iter::repeat_n(b'x', BLOCKSIZE));
+        wire.extend_from_slice(Header::new(0, true).as_bytes());
+
+        let mut output = Vec::new();
+        let cursor = MapiReader::to_limited(Cursor::new(wire), &mut output, BLOCKSIZE).unwrap();
+        assert_eq!(output, vec![b'x'; BLOCKSIZE]);
+        assert_eq!(cursor.position(), (BLOCKSIZE + 4) as u64);
     }
 }

@@ -77,7 +77,12 @@ pub enum MonetType {
     Blob,
     /// A URL.
     Url,
+    /// A legacy network address value represented as text by MAPI.
     Inet,
+    /// An IPv4 address.
+    Inet4,
+    /// An IPv6 address.
+    Inet6,
     /// Valid string representation of a JSON object.
     Json,
     /// A UUID.
@@ -114,6 +119,8 @@ impl fmt::Display for MonetType {
             Blob => f.write_str("BLOB"),
             Url => f.write_str("URL"),
             Inet => f.write_str("INET"),
+            Inet4 => f.write_str("INET4"),
+            Inet6 => f.write_str("INET6"),
             Json => f.write_str("JSON"),
             Uuid => f.write_str("UUID"),
             Geometry => f.write_str("GEOMETRY"),
@@ -150,7 +157,9 @@ impl MonetType {
             "timestamptz" => TimestampTz,
             "blob" => Blob,
             "url" => Url,
-            "inet" | "inet4" | "inet6" => Inet,
+            "inet" => Inet,
+            "inet4" => Inet4,
+            "inet6" => Inet6,
             "json" => Json,
             "uuid" => Uuid,
             "geometry" => Geometry,
@@ -176,7 +185,8 @@ mod tests {
             MonetType::from_mapi_code("str"),
             Some(MonetType::Varchar(0))
         );
-        assert_eq!(MonetType::from_mapi_code("inet4"), Some(MonetType::Inet));
-        assert_eq!(MonetType::from_mapi_code("inet6"), Some(MonetType::Inet));
+        assert_eq!(MonetType::from_mapi_code("inet"), Some(MonetType::Inet));
+        assert_eq!(MonetType::from_mapi_code("inet4"), Some(MonetType::Inet4));
+        assert_eq!(MonetType::from_mapi_code("inet6"), Some(MonetType::Inet6));
     }
 }

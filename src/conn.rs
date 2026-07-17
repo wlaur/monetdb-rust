@@ -158,7 +158,10 @@ impl OperationWatchdog {
             state.next_token = 1;
         }
         let token = state.next_token;
-        state.active = Some((token, Instant::now() + timeout));
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .expect("portable operation timeout fits Instant");
+        state.active = Some((token, deadline));
         state.fired_token = 0;
         self.shared.wake.notify_one();
         Some(token)
@@ -353,6 +356,8 @@ impl Connection {
                 response.clear();
                 sock = MapiReader::to_limited(sock, &mut response, self.0.max_response_size)?;
                 let expected = if enabled { b"&4 t" } else { b"&4 f" };
+                // MonetDB's clients/mapilib/mapi.c `mapi_Xcommand` treats a
+                // completed empty response as success and reads away optional output.
                 if !response.is_empty() && response.trim_ascii() != expected {
                     if let Some(error) = crate::cursor::replies::server_error(&response) {
                         response_error = Some(CursorError::Server(error));
@@ -429,6 +434,7 @@ impl Conn {
             ServerSock,
         ) -> CursorResult<ServerSock>,
     {
+        let timeouts = timeouts.bounded();
         let mut guard = match self.locked.lock() {
             Ok(guard) => guard,
             Err(_) => {
@@ -509,16 +515,19 @@ impl Conn {
     }
 
     pub(crate) fn cancel(&self) -> CursorResult<()> {
-        self.operation_state
-            .compare_exchange(
-                OPERATION_ACTIVE,
-                OPERATION_CANCELLED,
-                atomic::Ordering::AcqRel,
-                atomic::Ordering::Acquire,
-            )
-            .map_err(|_| CursorError::NoActiveOperation)?;
-        let _ = self.control.shutdown();
-        Ok(())
+        match self.operation_state.compare_exchange(
+            OPERATION_ACTIVE,
+            OPERATION_CANCELLED,
+            atomic::Ordering::AcqRel,
+            atomic::Ordering::Acquire,
+        ) {
+            Ok(_) => {
+                let _ = self.control.shutdown();
+                Ok(())
+            }
+            Err(OPERATION_IDLE) | Err(OPERATION_CANCELLED) => Ok(()),
+            Err(_) => Err(CursorError::Poisoned),
+        }
     }
 
     pub(crate) fn try_queue_closes(&self, result_ids: &[u64]) {
@@ -716,7 +725,7 @@ mod tests {
         parameters.set_operation_timeout(5).unwrap();
         let connection = Connection::new(parameters).unwrap();
         let cancel = connection.cancel_handle();
-        assert_eq!(cancel.cancel(), Err(CursorError::NoActiveOperation));
+        assert_eq!(cancel.cancel(), Ok(()));
 
         let (result_sender, result_receiver) = mpsc::sync_channel(1);
         let worker = thread::spawn(move || {
