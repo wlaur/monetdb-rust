@@ -51,11 +51,6 @@
 
     - [0/0] all non-temporal resultset types
 
-    - unsupported types
-      - [ ] geometry
-      - [ ] geometrya
-      - [ ] mbr
-
     - [0/8] all temporal resultset types
       - [ ] month_interval
       - [ ] day_interval
