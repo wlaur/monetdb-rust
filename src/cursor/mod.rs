@@ -44,7 +44,7 @@ pub enum CursorError {
     #[error("operation timed out")]
     Timeout,
     /// The operation was explicitly cancelled from another thread.
-    #[error("operation was cancelled")]
+    #[error("operation was cancelled; connection closed by cancel")]
     Cancelled,
     /// Cancellation was requested while no operation was running.
     #[error("there is no active operation to cancel")]

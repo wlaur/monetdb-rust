@@ -515,16 +515,19 @@ impl Conn {
     }
 
     pub(crate) fn cancel(&self) -> CursorResult<()> {
-        self.operation_state
-            .compare_exchange(
-                OPERATION_ACTIVE,
-                OPERATION_CANCELLED,
-                atomic::Ordering::AcqRel,
-                atomic::Ordering::Acquire,
-            )
-            .map_err(|_| CursorError::NoActiveOperation)?;
-        let _ = self.control.shutdown();
-        Ok(())
+        match self.operation_state.compare_exchange(
+            OPERATION_ACTIVE,
+            OPERATION_CANCELLED,
+            atomic::Ordering::AcqRel,
+            atomic::Ordering::Acquire,
+        ) {
+            Ok(_) => {
+                let _ = self.control.shutdown();
+                Ok(())
+            }
+            Err(OPERATION_IDLE) | Err(OPERATION_CANCELLED) => Ok(()),
+            Err(_) => Err(CursorError::Poisoned),
+        }
     }
 
     pub(crate) fn try_queue_closes(&self, result_ids: &[u64]) {
@@ -722,7 +725,7 @@ mod tests {
         parameters.set_operation_timeout(5).unwrap();
         let connection = Connection::new(parameters).unwrap();
         let cancel = connection.cancel_handle();
-        assert_eq!(cancel.cancel(), Err(CursorError::NoActiveOperation));
+        assert_eq!(cancel.cancel(), Ok(()));
 
         let (result_sender, result_receiver) = mpsc::sync_channel(1);
         let worker = thread::spawn(move || {
