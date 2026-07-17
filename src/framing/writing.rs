@@ -6,24 +6,14 @@
 //
 // Copyright 2024 MonetDB Foundation
 
-#![allow(
-    dead_code,
-    unused_imports,
-    unused_import_braces,
-    unused_variables,
-    unused_assignments
-)]
-
 use std::{fmt, io};
 
-use super::{
-    BLOCKSIZE,
-    blockstate::{BlockState, Header},
-};
+use super::{BLOCKSIZE, blockstate::Header};
 
 pub struct MapiBuf {
     buffer: Vec<u8>,
     block_left: usize,
+    reset_pending: bool,
 }
 
 impl Default for MapiBuf {
@@ -42,6 +32,7 @@ impl MapiBuf {
         let mut me = MapiBuf {
             buffer,
             block_left: 0,
+            reset_pending: false,
         };
         // obvious dummy header
         me.buffer.push(0xFF);
@@ -51,6 +42,7 @@ impl MapiBuf {
     }
 
     pub fn append(&mut self, data: impl AsRef<[u8]>) {
+        self.prepare_reset();
         let data = data.as_ref();
         if data.len() <= self.block_left {
             // happy path
@@ -90,26 +82,19 @@ impl MapiBuf {
     }
 
     pub fn end(&mut self) {
+        self.prepare_reset();
         self.finish_block(true);
     }
 
     pub fn reset(&mut self) -> &[u8] {
+        self.prepare_reset();
         let mut raw_len = self.buffer.len();
         if self.block_left == BLOCKSIZE {
             raw_len -= 2;
         }
-        // now reset the buffer but make sure not to overwrite the initial
-        // header yet
-        self.buffer.truncate(2);
         self.block_left = BLOCKSIZE;
-        let raw_base = self.buffer.as_ptr();
-        // SAFETY: `raw_base` is derived after the mutable `truncate` call and
-        // points to the Vec's current allocation. `raw_len` is no greater than
-        // its capacity, and all bytes in that range were initialized before
-        // truncation; `u8` has no drop glue. The returned borrow is tied to
-        // `&mut self`, so the Vec cannot be mutated or reallocated while the
-        // slice is live.
-        unsafe { std::slice::from_raw_parts(raw_base, raw_len) }
+        self.reset_pending = true;
+        &self.buffer[..raw_len]
     }
 
     pub fn end_reset(&mut self) -> &[u8] {
@@ -132,7 +117,18 @@ impl MapiBuf {
     }
 
     pub fn peek(&self) -> &[u8] {
-        &self.buffer
+        if self.reset_pending {
+            &[]
+        } else {
+            &self.buffer
+        }
+    }
+
+    fn prepare_reset(&mut self) {
+        if self.reset_pending {
+            self.buffer.truncate(2);
+            self.reset_pending = false;
+        }
     }
 }
 
@@ -145,8 +141,6 @@ impl fmt::Write for MapiBuf {
 
 #[cfg(test)]
 mod tests {
-    use std::iter::Map;
-
     use crate::util::referencedata::ReferenceData;
 
     use super::*;
@@ -181,5 +175,16 @@ mod tests {
         let mut verifier = refd.verifier();
         verifier.assert(actual);
         verifier.assert_end();
+    }
+
+    #[test]
+    fn reset_is_applied_before_the_next_append() {
+        let mut mb = MapiBuf::new();
+        mb.append(b"first");
+        assert_eq!(mb.end_reset(), &[11, 0, b'f', b'i', b'r', b's', b't']);
+        assert!(mb.peek().is_empty());
+
+        mb.append(b"next");
+        assert_eq!(mb.end_reset(), &[9, 0, b'n', b'e', b'x', b't']);
     }
 }
