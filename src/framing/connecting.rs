@@ -70,6 +70,11 @@ pub enum ConnectError {
     UnexpectedResponse(String),
     #[error("Unix domain sockets are not supported on this platform")]
     UnixDomain,
+    #[error("Unix socket connection failed: {unix}; TCP connection failed: {tcp}")]
+    SocketAttempts {
+        unix: Box<ConnectError>,
+        tcp: Box<ConnectError>,
+    },
 }
 
 pub type ConnectResult<T> = Result<T, ConnectError>;
@@ -257,21 +262,29 @@ where
 }
 
 fn connect_socket(parms: &Validated, deadline: ConnectionDeadline) -> ConnectResult<ServerSock> {
-    let mut err: Option<ConnectError> = None;
+    let mut unix_error = None;
 
     if !parms.connect_unix.is_empty() {
         match connect_unix_socket(parms, deadline) {
             Ok(s) => return Ok(s),
-            Err(e) => err = Some(e),
+            Err(error) => unix_error = Some(error),
         }
     }
     if !parms.connect_tcp.is_empty() {
         match connect_tcp_socket(parms, deadline) {
             Ok(s) => return wrap_tls(parms, s),
-            Err(e) => err = Some(e),
+            Err(tcp) => {
+                return Err(match unix_error {
+                    Some(unix) => ConnectError::SocketAttempts {
+                        unix: Box::new(unix),
+                        tcp: Box::new(tcp),
+                    },
+                    None => tcp,
+                });
+            }
         }
     }
-    Err(err.unwrap_or_else(|| {
+    Err(unix_error.unwrap_or_else(|| {
         io::Error::new(ErrorKind::InvalidInput, "no connection address configured").into()
     }))
 }
@@ -757,6 +770,26 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_and_tcp_failures_are_both_reported() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let mut parameters = Parameters::default();
+        parameters.set_port(port).unwrap();
+        let validated = parameters.validate().unwrap();
+
+        let error = connect_socket(
+            &validated,
+            ConnectionDeadline::new(Some(Duration::from_secs(1))),
+        )
+        .unwrap_err();
+        assert!(matches!(error, ConnectError::SocketAttempts { .. }));
+        assert!(error.to_string().contains("Unix socket connection failed"));
+        assert!(error.to_string().contains("TCP connection failed"));
     }
 
     #[test]
