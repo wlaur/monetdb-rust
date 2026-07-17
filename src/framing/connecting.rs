@@ -56,6 +56,8 @@ pub enum ConnectError {
     UnsupportedHashAlgo(String),
     #[error("TLS (monetdbs://) has not been enabled")]
     TlsNotSupported,
+    #[error("TLS connection cannot follow a plaintext redirect")]
+    TlsDowngrade,
     #[error("TLS error: {0}")]
     TlsError(String),
     #[error("only language=sql is supported")]
@@ -344,7 +346,7 @@ pub fn establish_connection(
             }
             Login::Redirect(url) => {
                 debug!("redirected to {url}");
-                parms.apply_url(&url)?;
+                apply_redirect(&mut parms, &url)?;
             }
             Login::Restart(sock) => {
                 debug!("local redirect, restarting authentication");
@@ -353,6 +355,15 @@ pub fn establish_connection(
         }
     }
     Err(ConnectError::TooManyRedirects)
+}
+
+fn apply_redirect(parms: &mut Parameters, url: &str) -> ConnectResult<()> {
+    let required_tls = parms.validate()?.tls;
+    parms.apply_url(url)?;
+    if required_tls && !parms.validate()?.tls {
+        return Err(ConnectError::TlsDowngrade);
+    }
+    Ok(())
 }
 
 fn login(parms: &Validated, sock: ServerSock) -> ConnectResult<(Login, DelayedCommands)> {
@@ -928,6 +939,26 @@ mod tests {
             error,
             ConnectError::InvalidChallenge("invalid oobintr level".into())
         );
+    }
+
+    #[test]
+    fn tls_connections_reject_plaintext_redirects() {
+        let mut parameters = Parameters::default();
+        parameters.set_tls(true).unwrap();
+
+        assert_eq!(
+            apply_redirect(&mut parameters, "monetdb://other.example/demo"),
+            Err(ConnectError::TlsDowngrade)
+        );
+    }
+
+    #[test]
+    fn tls_connections_accept_tls_redirects() {
+        let mut parameters = Parameters::default();
+        parameters.set_tls(true).unwrap();
+
+        apply_redirect(&mut parameters, "monetdbs://other.example/demo").unwrap();
+        assert!(parameters.validate().unwrap().tls);
     }
 
     #[test]
