@@ -101,15 +101,16 @@ impl DelayedCommands {
         for resp in self.responses.drain(..) {
             buffer.clear();
             conn = MapiReader::to_limited(conn, buffer, max_response_size)?;
-            if let Some(msg) = super::replies::server_error_message(buffer) {
+            if let Some(error) = super::replies::server_error(buffer) {
                 let description = &resp.description;
                 if resp.ignore_server_error {
-                    log::warn!("delayed {description}: {msg}");
+                    log::warn!("delayed {description}: {error}");
                     continue;
                 }
-                return Err(super::CursorError::Server(format!(
-                    "delayed {description}: {msg}"
-                )));
+                let context = format!("delayed {description}");
+                return Err(super::CursorError::Server(
+                    super::ServerError::with_context(&context, error),
+                ));
             }
         }
         Ok(conn)

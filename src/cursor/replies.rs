@@ -13,7 +13,7 @@ use memchr::memmem;
 
 use crate::monettypes::MonetType;
 
-use super::{CursorError, CursorResult, rowset::RowSet};
+use super::{CursorError, CursorResult, ServerError, rowset::RowSet};
 
 #[derive(Debug, PartialEq, Eq, Clone, thiserror::Error)]
 pub enum BadReply {
@@ -45,6 +45,10 @@ pub enum BadReply {
     ResultIdMismatch { expected: u64, actual: u64 },
     #[error("export reply has {actual} columns, expected {expected}")]
     ColumnCountMismatch { expected: usize, actual: u64 },
+    #[error("export reply contains {actual} rows, expected {expected}")]
+    RowCountMismatch { expected: usize, actual: u64 },
+    #[error("export reply starts at row {actual}, expected {expected}")]
+    RowOffsetMismatch { expected: u64, actual: u64 },
 }
 
 pub type RResult<T> = Result<T, BadReply>;
@@ -64,7 +68,7 @@ pub(crate) fn response_autocommit(response: &[u8]) -> Option<bool> {
         .next_back()
 }
 
-pub(crate) fn server_error_message(response: &[u8]) -> Option<String> {
+pub(crate) fn server_error(response: &[u8]) -> Option<ServerError> {
     let mut messages = response
         .split(|byte| *byte == b'\n')
         .filter_map(|line| line.strip_prefix(b"!"));
@@ -74,7 +78,7 @@ pub(crate) fn server_error_message(response: &[u8]) -> Option<String> {
         result.push('\n');
         result.push_str(&String::from_utf8_lossy(message));
     }
-    Some(result)
+    Some(ServerError::from_wire(result))
 }
 
 #[derive(Debug)]
@@ -384,8 +388,8 @@ impl ReplyParser {
     }
 
     pub fn detect_errors(response: &[u8]) -> CursorResult<()> {
-        match server_error_message(response) {
-            Some(message) => Err(CursorError::Server(message)),
+        match server_error(response) {
+            Some(error) => Err(CursorError::Server(error)),
             None => Ok(()),
         }
     }
@@ -431,6 +435,23 @@ impl ReplyParser {
 
     pub(crate) fn parse_header<T: FromStr>(buf: &mut ReplyBuf, dest: &mut [T]) -> RResult<()> {
         let line = buf.split_str(b'\n', "header line")?.trim_ascii();
+        Self::parse_header_line(line, dest)
+    }
+
+    pub(crate) fn parse_export_header<T: FromStr>(
+        buf: &mut ReplyBuf,
+        dest: &mut [T],
+    ) -> RResult<()> {
+        let line = buf.split_str(b'\n', "header line")?.trim_ascii();
+        if !line.starts_with("&6 ") {
+            return Err(BadReply::InvalidHeader(format!(
+                "expected '&6 ' prefix: {line}"
+            )));
+        }
+        Self::parse_header_line(line, dest)
+    }
+
+    fn parse_header_line<T: FromStr>(line: &str, dest: &mut [T]) -> RResult<()> {
         let bytes = line.as_bytes();
         if bytes.len() < 3 || bytes[0] != b'&' || !bytes[1].is_ascii_digit() || bytes[2] != b' ' {
             return Err(BadReply::InvalidHeader(format!(
@@ -653,7 +674,7 @@ pub fn from_utf8<'a>(context: &'static str, bytes: &'a [u8]) -> RResult<&'a str>
 
 #[cfg(test)]
 mod tests {
-    use super::{BadReply, ReplyParser, ResultSet, response_autocommit, server_error_message};
+    use super::{BadReply, ReplyParser, ResultSet, response_autocommit, server_error};
 
     #[test]
     fn extracts_last_autocommit_status() {
@@ -667,9 +688,12 @@ mod tests {
     #[test]
     fn preserves_all_server_error_lines() {
         let response = b"&2 0\n!42000!syntax error\n!detail from optimizer\n&4 f\n";
+        let error = server_error(response).unwrap();
+        assert_eq!(error.sqlstate(), Some("42000"));
+        assert_eq!(error.message(), "syntax error\ndetail from optimizer");
         assert_eq!(
-            server_error_message(response).as_deref(),
-            Some("42000!syntax error\ndetail from optimizer")
+            error.to_string(),
+            "42000!syntax error\ndetail from optimizer"
         );
     }
 

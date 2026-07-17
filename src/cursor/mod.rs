@@ -12,6 +12,7 @@ pub(crate) mod rowset;
 mod upload;
 
 use std::borrow::Cow;
+use std::fmt;
 use std::mem;
 use std::num::NonZeroUsize;
 use std::{io, sync::Arc};
@@ -31,8 +32,8 @@ use crate::util::ioerror::IoError;
 #[derive(Debug, PartialEq, Eq, Clone, thiserror::Error)]
 pub enum CursorError {
     /// The server returned an error.
-    #[error("{0}")]
-    Server(String),
+    #[error(transparent)]
+    Server(#[from] ServerError),
     /// The connection has been closed.
     #[error("connection has been closed")]
     Closed,
@@ -96,6 +97,59 @@ pub enum CursorError {
     #[error("connection state is poisoned")]
     Poisoned,
 }
+
+/// A structured error returned by the MonetDB server.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct ServerError {
+    sqlstate: Option<String>,
+    message: String,
+    display: String,
+}
+
+impl ServerError {
+    pub(crate) fn from_wire(display: String) -> Self {
+        let bytes = display.as_bytes();
+        let has_sqlstate = bytes.len() >= 6
+            && bytes[5] == b'!'
+            && bytes[..5].iter().all(u8::is_ascii_alphanumeric);
+        let (sqlstate, message) = if has_sqlstate {
+            (Some(display[..5].to_string()), display[6..].to_string())
+        } else {
+            (None, display.clone())
+        };
+        Self {
+            sqlstate,
+            message,
+            display,
+        }
+    }
+
+    pub(crate) fn with_context(context: &str, error: Self) -> Self {
+        Self {
+            sqlstate: error.sqlstate,
+            message: format!("{context}: {}", error.message),
+            display: format!("{context}: {}", error.display),
+        }
+    }
+
+    /// Return the five-character SQLSTATE reported by the server, when present.
+    pub fn sqlstate(&self) -> Option<&str> {
+        self.sqlstate.as_deref()
+    }
+
+    /// Return the server message without the SQLSTATE prefix.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl fmt::Display for ServerError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.display.fmt(formatter)
+    }
+}
+
+impl std::error::Error for ServerError {}
 
 pub type CursorResult<T> = Result<T, CursorError>;
 
@@ -491,12 +545,22 @@ impl Cursor {
         }
         let available = result.total_rows - start;
         let count = count.min(usize::try_from(available).unwrap_or(usize::MAX));
-        let command = format!("Xexportbin {} {start} {count}", result.result_id);
+        let result_id = result.result_id;
+        let expected_columns = result.columns.len();
+        let command = format!("Xexportbin {result_id} {start} {count}");
         response.clear();
         self.command_raw(&[command.as_bytes()], response)?;
         if response.first() == Some(&b'!') {
             ReplyParser::detect_errors(response)?;
         }
+        let header_end = response
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .ok_or(BadReply::UnexpectedEnd)?;
+        let mut header = ReplyBuf::new(response[..=header_end].to_vec());
+        let mut fields = [0u64; 4];
+        ReplyParser::parse_export_header(&mut header, &mut fields)?;
+        validate_export_header(&fields, result_id, expected_columns, count, start)?;
         Ok(())
     }
 
@@ -591,8 +655,8 @@ impl Cursor {
         // parse it into a rowset
         let mut buf = ReplyBuf::new(vec);
         let mut fields = [0u64; 4];
-        ReplyParser::parse_header(&mut buf, &mut fields)?;
-        validate_export_header(&fields, res_id, expected_columns)?;
+        ReplyParser::parse_export_header(&mut buf, &mut fields)?;
+        validate_export_header(&fields, res_id, expected_columns, n, start)?;
         let mut new_row_set = RowSet::new(buf, expected_columns);
 
         // If we were reading the initial response, save it.
@@ -646,6 +710,8 @@ fn validate_export_header(
     fields: &[u64; 4],
     expected_result_id: u64,
     expected_columns: usize,
+    expected_rows: usize,
+    expected_offset: u64,
 ) -> Result<(), BadReply> {
     if fields[0] != expected_result_id {
         return Err(BadReply::ResultIdMismatch {
@@ -657,6 +723,18 @@ fn validate_export_header(
         return Err(BadReply::ColumnCountMismatch {
             expected: expected_columns,
             actual: fields[1],
+        });
+    }
+    if fields[2] != expected_rows as u64 {
+        return Err(BadReply::RowCountMismatch {
+            expected: expected_rows,
+            actual: fields[2],
+        });
+    }
+    if fields[3] != expected_offset {
+        return Err(BadReply::RowOffsetMismatch {
+            expected: expected_offset,
+            actual: fields[3],
         });
     }
     Ok(())
@@ -721,17 +799,31 @@ mod tests {
     #[test]
     fn export_header_must_match_current_result() {
         assert_eq!(
-            validate_export_header(&[8, 2, 1, 0], 7, 2),
+            validate_export_header(&[8, 2, 1, 0], 7, 2, 1, 0),
             Err(BadReply::ResultIdMismatch {
                 expected: 7,
                 actual: 8,
             })
         );
         assert_eq!(
-            validate_export_header(&[7, 4_000_000_000, 1, 0], 7, 2),
+            validate_export_header(&[7, 4_000_000_000, 1, 0], 7, 2, 1, 0),
             Err(BadReply::ColumnCountMismatch {
                 expected: 2,
                 actual: 4_000_000_000,
+            })
+        );
+        assert_eq!(
+            validate_export_header(&[7, 2, 2, 0], 7, 2, 1, 0),
+            Err(BadReply::RowCountMismatch {
+                expected: 1,
+                actual: 2,
+            })
+        );
+        assert_eq!(
+            validate_export_header(&[7, 2, 1, 3], 7, 2, 1, 0),
+            Err(BadReply::RowOffsetMismatch {
+                expected: 0,
+                actual: 3,
             })
         );
     }
