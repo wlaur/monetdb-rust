@@ -313,40 +313,42 @@ pub fn establish_connection(
     mut parms: Parameters,
 ) -> ConnectResult<(ServerSock, ServerState, DelayedCommands, Timeouts)> {
     let deadline = ConnectionDeadline::new(parms.validate()?.connect_timeout);
-    'redirect: for _ in 0..10 {
+    let mut restarted_socket = None;
+    for _ in 0..10 {
         let validated = parms.validate()?;
-        if log_enabled!(log::Level::Debug)
-            && let Ok(url) = parms.url_without_credentials()
-        {
-            debug!("connecting to {url}");
-        }
-        let mut sock = connect_socket(&validated, deadline)?;
-        'restart: loop {
-            let (login, mut delayed) = login(&validated, sock)?;
-            match login {
-                Login::Complete(sock, state) => {
-                    // Send the delayed commands, do not wait to receive the
-                    // reply, we will do that later
-                    return match delayed.send_delayed(sock) {
-                        Ok(sock) => {
-                            let timeouts = Timeouts::from_validated(&validated);
-                            sock.set_connection_deadline(timeouts, None);
-                            Ok((sock, state, delayed, timeouts))
-                        }
-                        Err(CursorError::IO(error)) => Err(ConnectError::IO(error)),
-                        Err(error) => Err(ConnectError::UnexpectedResponse(error.to_string())),
-                    };
+        let sock = match restarted_socket.take() {
+            Some(sock) => sock,
+            None => {
+                if log_enabled!(log::Level::Debug)
+                    && let Ok(url) = parms.url_without_credentials()
+                {
+                    debug!("connecting to {url}");
                 }
-                Login::Redirect(url) => {
-                    debug!("redirected to {url}");
-                    parms.apply_url(&url)?;
-                    continue 'redirect;
-                }
-                Login::Restart(s) => {
-                    debug!("local redirect, restarting authentication");
-                    sock = s;
-                    continue 'restart;
-                }
+                connect_socket(&validated, deadline)?
+            }
+        };
+        let (login, mut delayed) = login(&validated, sock)?;
+        match login {
+            Login::Complete(sock, state) => {
+                // Send the delayed commands, do not wait to receive the
+                // reply, we will do that later
+                return match delayed.send_delayed(sock) {
+                    Ok(sock) => {
+                        let timeouts = Timeouts::from_validated(&validated);
+                        sock.set_connection_deadline(timeouts, None);
+                        Ok((sock, state, delayed, timeouts))
+                    }
+                    Err(CursorError::IO(error)) => Err(ConnectError::IO(error)),
+                    Err(error) => Err(ConnectError::UnexpectedResponse(error.to_string())),
+                };
+            }
+            Login::Redirect(url) => {
+                debug!("redirected to {url}");
+                parms.apply_url(&url)?;
+            }
+            Login::Restart(sock) => {
+                debug!("local redirect, restarting authentication");
+                restarted_socket = Some(sock);
             }
         }
     }
@@ -611,19 +613,16 @@ impl<'a> Challenge<'a> {
         let mut sql_handshake_option_level = 0;
         let mut binary = 0;
         let mut clientinfo = false;
-        for field in parts {
-            for option in field.split(',') {
-                if let Some(level) = option.strip_prefix("sql=") {
-                    sql_handshake_option_level = level
-                        .parse()
-                        .map_err(|_| err("invalid handshake options level"))?;
-                }
-            }
-            if let Some(level) = field.strip_prefix("BINARY=") {
+        for option in parts.flat_map(|field| field.split(',')) {
+            if let Some(level) = option.strip_prefix("sql=") {
+                sql_handshake_option_level = level
+                    .parse()
+                    .map_err(|_| err("invalid handshake options level"))?;
+            } else if let Some(level) = option.strip_prefix("BINARY=") {
                 binary = level.parse().map_err(|_| err("invalid binary level"))?;
-            } else if let Some(level) = field.strip_prefix("OOBINTR=") {
+            } else if let Some(level) = option.strip_prefix("OOBINTR=") {
                 let _: u16 = level.parse().map_err(|_| err("invalid oobintr level"))?;
-            } else if field == "CLIENTINFO" {
+            } else if option == "CLIENTINFO" {
                 clientinfo = true;
             }
         }
@@ -849,6 +848,30 @@ mod tests {
         parameters
     }
 
+    fn restart_loop_parameters() -> Parameters {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut nuls = [0; 8];
+            stream.read_exact(&mut nuls).unwrap();
+            for _ in 0..10 {
+                write_message(
+                    &mut stream,
+                    b"salt:mserver:9:SHA512:LIT:SHA512:sql=9:BINARY=1:",
+                );
+                read_message(&mut stream);
+                write_message(&mut stream, b"^mapi:merovingian://proxy");
+            }
+        });
+        let mut parameters = Parameters::default();
+        parameters.set_host("127.0.0.1").unwrap();
+        parameters.set_port(port).unwrap();
+        parameters.set_client_info("false").unwrap();
+        parameters.set_connect_timeout(2).unwrap();
+        parameters
+    }
+
     #[test]
     fn silent_login_is_bounded_by_the_connection_deadline() {
         let result = establish_connection(silent_server_parameters(false));
@@ -878,9 +901,18 @@ mod tests {
     }
 
     #[test]
+    fn merovingian_restarts_share_the_redirect_budget() {
+        let result = establish_connection(restart_loop_parameters());
+        match result {
+            Err(error) => assert_eq!(error, ConnectError::TooManyRedirects),
+            Ok(_) => panic!("restart loop unexpectedly connected"),
+        }
+    }
+
+    #[test]
     fn challenge_optional_fields_are_order_independent_and_extensible() {
         let challenge = Challenge::new(
-            "salt:mserver:9:SHA512:LIT:SHA512:FUTURE=7:CLIENTINFO:OOBINTR=3:sql=9:BINARY=2:",
+            "salt:mserver:9:SHA512:LIT:SHA512:FUTURE=7,CLIENTINFO,OOBINTR=3,sql=9,BINARY=2:",
         )
         .unwrap();
 
