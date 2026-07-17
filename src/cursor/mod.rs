@@ -242,8 +242,9 @@ impl Cursor {
     }
 
     /// Override the connection's idle and absolute timeouts for this cursor.
+    /// Values above the portable socket timeout limit are clamped to that limit.
     pub fn set_timeouts(&mut self, timeouts: Timeouts) {
-        self.timeouts = timeouts;
+        self.timeouts = timeouts.bounded();
     }
 
     /// Return the idle and absolute timeouts used by this cursor.

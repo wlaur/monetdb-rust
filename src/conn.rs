@@ -158,7 +158,10 @@ impl OperationWatchdog {
             state.next_token = 1;
         }
         let token = state.next_token;
-        state.active = Some((token, Instant::now() + timeout));
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .expect("portable operation timeout fits Instant");
+        state.active = Some((token, deadline));
         state.fired_token = 0;
         self.shared.wake.notify_one();
         Some(token)
@@ -429,6 +432,7 @@ impl Conn {
             ServerSock,
         ) -> CursorResult<ServerSock>,
     {
+        let timeouts = timeouts.bounded();
         let mut guard = match self.locked.lock() {
             Ok(guard) => guard,
             Err(_) => {

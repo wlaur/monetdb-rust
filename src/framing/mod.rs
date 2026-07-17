@@ -47,6 +47,15 @@ impl Timeouts {
             operation: parms.operation_timeout,
         }
     }
+
+    pub(crate) fn bounded(self) -> Self {
+        let bounded = |timeout: Option<Duration>| timeout.map(|value| value.min(MAX_TIMEOUT));
+        Self {
+            read: bounded(self.read),
+            write: bounded(self.write),
+            operation: bounded(self.operation),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -58,17 +67,20 @@ struct ActiveTimeouts {
 
 impl ActiveTimeouts {
     fn new(timeouts: Timeouts) -> Self {
+        let timeouts = timeouts.bounded();
         let now = Instant::now();
         Self {
             read: timeouts.read,
             write: timeouts.write,
-            deadline: timeouts
-                .operation
-                .and_then(|timeout| now.checked_add(timeout)),
+            deadline: timeouts.operation.map(|timeout| {
+                now.checked_add(timeout)
+                    .expect("portable operation timeout fits Instant")
+            }),
         }
     }
 
     fn for_connection(timeouts: Timeouts, deadline: Option<Instant>) -> Self {
+        let timeouts = timeouts.bounded();
         Self {
             read: timeouts.read,
             write: timeouts.write,
@@ -695,18 +707,20 @@ mod tests {
     }
 
     #[test]
-    fn active_timeouts_reject_values_that_windows_would_make_infinite() {
+    fn active_timeouts_bound_values_that_windows_would_make_infinite() {
         let active = super::ActiveTimeouts::new(super::Timeouts {
-            read: Some(std::time::Duration::from_secs(
-                (super::MAX_TIMEOUT_SECONDS + 1) as u64,
-            )),
+            read: Some(std::time::Duration::MAX),
             write: None,
-            operation: None,
+            operation: Some(std::time::Duration::MAX),
         });
 
         assert_eq!(
-            active.read_limit().unwrap_err().kind(),
-            io::ErrorKind::InvalidInput
+            active.read,
+            Some(std::time::Duration::from_secs(
+                super::MAX_TIMEOUT_SECONDS as u64
+            ))
         );
+        assert!(active.read_limit().unwrap().is_some());
+        assert!(active.deadline.is_some());
     }
 }
