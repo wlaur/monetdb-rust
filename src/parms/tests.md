@@ -1458,9 +1458,9 @@ Timeouts are integer seconds. Zero explicitly requests no timeout.
 
 ```test
 EXPECT connect_timeout=30
-EXPECT read_timeout=60
+EXPECT read_timeout=0
 EXPECT write_timeout=60
-EXPECT operation_timeout=300
+EXPECT operation_timeout=0
 ACCEPT monetdb://localhost/demo?connect_timeout=1&read_timeout=2&write_timeout=3&operation_timeout=4
 EXPECT connect_timeout=1
 EXPECT read_timeout=2

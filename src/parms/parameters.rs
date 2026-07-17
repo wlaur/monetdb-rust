@@ -577,10 +577,10 @@ const fn default_parameter_value_by_index(idx: usize) -> Value {
         Value::Bool(true)
     } else if idx == ConnectTimeout.index() {
         Value::Int(30)
-    } else if idx == ReadTimeout.index() || idx == WriteTimeout.index() {
+    } else if idx == WriteTimeout.index() {
         Value::Int(60)
-    } else if idx == OperationTimeout.index() {
-        Value::Int(300)
+    } else if idx == ReadTimeout.index() || idx == OperationTimeout.index() {
+        Value::Int(0)
     } else if idx == MaxResponseSize.index() {
         Value::Int(1024 * 1024 * 1024)
     } else {
@@ -1427,13 +1427,13 @@ fn validation_rejects_non_sql_languages() {
 }
 
 #[test]
-fn validation_applies_finite_timeout_defaults() {
+fn validation_applies_timeout_defaults() {
     let parameters = Parameters::default();
     let validated = parameters.validate().unwrap();
     assert_eq!(validated.connect_timeout, Some(Duration::from_secs(30)));
-    assert_eq!(validated.read_timeout, Some(Duration::from_secs(60)));
+    assert_eq!(validated.read_timeout, None);
     assert_eq!(validated.write_timeout, Some(Duration::from_secs(60)));
-    assert_eq!(validated.operation_timeout, Some(Duration::from_secs(300)));
+    assert_eq!(validated.operation_timeout, None);
 }
 
 #[test]
