@@ -356,6 +356,8 @@ impl Connection {
                 response.clear();
                 sock = MapiReader::to_limited(sock, &mut response, self.0.max_response_size)?;
                 let expected = if enabled { b"&4 t" } else { b"&4 f" };
+                // MonetDB's clients/mapilib/mapi.c `mapi_Xcommand` treats a
+                // completed empty response as success and reads away optional output.
                 if !response.is_empty() && response.trim_ascii() != expected {
                     if let Some(error) = crate::cursor::replies::server_error(&response) {
                         response_error = Some(CursorError::Server(error));
