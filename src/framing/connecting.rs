@@ -517,7 +517,11 @@ fn challenge_response(
                 seconds_east as i64,
                 format_args!("sSET TIME ZONE INTERVAL '{sign}{h:02}:{m:02}' HOUR TO MINUTE;"),
             );
-            state.time_zone_seconds = seconds_east;
+            state.time_zone_seconds = if 5 < level_limit {
+                seconds_east
+            } else {
+                mins * 60
+            };
         }
 
         if !parms.schema.is_empty() {
