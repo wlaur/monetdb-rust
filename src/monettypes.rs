@@ -84,8 +84,6 @@ pub enum MonetType {
     Uuid,
     /// A geometry value.
     Geometry,
-    /// A geometry value with an additional coordinate dimension.
-    GeometryA,
     /// An XML document or fragment.
     Xml,
 }
@@ -119,7 +117,6 @@ impl fmt::Display for MonetType {
             Json => f.write_str("JSON"),
             Uuid => f.write_str("UUID"),
             Geometry => f.write_str("GEOMETRY"),
-            GeometryA => f.write_str("GEOMETRYA"),
             Xml => f.write_str("XML"),
         }
     }
@@ -157,7 +154,6 @@ impl MonetType {
             "json" => Json,
             "uuid" => Uuid,
             "geometry" => Geometry,
-            "geometrya" => GeometryA,
             "xml" => Xml,
             _ => return None,
         };
@@ -174,10 +170,6 @@ mod tests {
         assert_eq!(
             MonetType::from_mapi_code("geometry"),
             Some(MonetType::Geometry)
-        );
-        assert_eq!(
-            MonetType::from_mapi_code("geometrya"),
-            Some(MonetType::GeometryA)
         );
         assert_eq!(MonetType::from_mapi_code("xml"), Some(MonetType::Xml));
         assert_eq!(
