@@ -20,7 +20,9 @@ pub mod parms;
 mod util;
 
 pub use conn::{CancelHandle, Connection, ServerInfo};
-pub use cursor::{BinaryResult, Cursor, CursorError, CursorResult, replies::ResultColumn};
+pub use cursor::{
+    BinaryResult, Cursor, CursorError, CursorResult, ServerError, replies::ResultColumn,
+};
 pub use framing::connecting::{ConnectError, ConnectResult, Endian};
 pub use framing::{MAX_TIMEOUT_SECONDS, Timeouts};
 pub use monettypes::MonetType;

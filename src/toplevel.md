@@ -49,8 +49,8 @@ let conn = Connection::new(parms)?;
 Current status
 --------------
 
-* Support for MonetDB Jun2020 (11.37.7) and higher. Older versions are highly
-  likely to work but haven't been tested. If you need this, just ask.
+* MonetDB Dec2025 (11.55.7) and later are supported. Protocol compatibility
+  with older releases is not maintained.
 
 * Rust 2024 edition; current stable Rust is the supported toolchain.
 
@@ -78,7 +78,8 @@ Current status
 
 Not implemented yet but planned:
 
-* parametrized queries
+* A high-level parameter-binding API. PREPARE metadata and statement ids are
+  already exposed for clients that implement binding.
 
 * Adaptive paging window sizes
 

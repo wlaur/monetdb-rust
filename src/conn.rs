@@ -64,7 +64,8 @@ const OPERATION_CANCELLED: u8 = 2;
 
 struct OperationWatchdog {
     shared: Arc<WatchdogShared>,
-    worker: Option<JoinHandle<()>>,
+    control: Weak<SocketControl>,
+    worker: Mutex<Option<JoinHandle<()>>>,
 }
 
 struct WatchdogShared {
@@ -86,12 +87,22 @@ impl OperationWatchdog {
             state: Mutex::new(WatchdogState::default()),
             wake: Condvar::new(),
         });
-        let worker_shared = Arc::clone(&shared);
-        let worker_control = Arc::downgrade(control);
-        let worker = thread::spawn(move || Self::run(worker_shared, worker_control));
         Self {
             shared,
-            worker: Some(worker),
+            control: Arc::downgrade(control),
+            worker: Mutex::new(None),
+        }
+    }
+
+    fn ensure_worker(&self) {
+        let mut worker = self
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if worker.is_none() {
+            let shared = Arc::clone(&self.shared);
+            let control = self.control.clone();
+            *worker = Some(thread::spawn(move || Self::run(shared, control)));
         }
     }
 
@@ -136,6 +147,7 @@ impl OperationWatchdog {
 
     fn arm(&self, timeout: Option<Duration>) -> Option<u64> {
         let timeout = timeout?;
+        self.ensure_worker();
         let mut state = self
             .shared
             .state
@@ -182,7 +194,12 @@ impl Drop for OperationWatchdog {
             state.stopped = true;
             self.shared.wake.notify_one();
         }
-        if let Some(worker) = self.worker.take() {
+        let worker = self
+            .worker
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(worker) = worker {
             let _ = worker.join();
         }
     }
@@ -337,8 +354,8 @@ impl Connection {
                 sock = MapiReader::to_limited(sock, &mut response, self.0.max_response_size)?;
                 let expected = if enabled { b"&4 t" } else { b"&4 f" };
                 if !response.is_empty() && response.trim_ascii() != expected {
-                    if let Some(message) = crate::cursor::replies::server_error_message(&response) {
-                        response_error = Some(CursorError::Server(message));
+                    if let Some(error) = crate::cursor::replies::server_error(&response) {
+                        response_error = Some(CursorError::Server(error));
                     } else {
                         response_error = Some(CursorError::BadReply(
                             crate::cursor::replies::BadReply::UnexpectedHeader(response.into()),
@@ -725,6 +742,37 @@ mod tests {
             0
         );
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn operation_watchdog_starts_only_when_armed() {
+        let (port, _, _) = black_hole_query_server();
+        let connection = Connection::new(test_parameters(port)).unwrap();
+        assert!(
+            connection
+                .0
+                .operation_watchdog
+                .worker
+                .lock()
+                .unwrap()
+                .is_none()
+        );
+
+        let token = connection
+            .0
+            .operation_watchdog
+            .arm(Some(Duration::from_secs(1)));
+        assert!(token.is_some());
+        assert!(
+            connection
+                .0
+                .operation_watchdog
+                .worker
+                .lock()
+                .unwrap()
+                .is_some()
+        );
+        assert!(!connection.0.operation_watchdog.disarm(token));
     }
 
     #[test]

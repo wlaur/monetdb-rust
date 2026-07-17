@@ -307,8 +307,11 @@ impl ServerSockTrait for TcpStream {
 pub struct ServerSock {
     inner: Box<dyn ServerSockTrait>,
     control: Arc<SocketControl>,
-    read_buffer: Vec<u8>,
+    read_buffer: Option<Box<[u8; READ_BUFFER_SIZE]>>,
     read_position: usize,
+    read_length: usize,
+    last_read_timeout: Option<Option<Duration>>,
+    last_write_timeout: Option<Option<Duration>>,
 }
 
 impl ServerSock {
@@ -329,8 +332,11 @@ impl ServerSock {
         ServerSock {
             inner: Box::new(sock),
             control,
-            read_buffer: Vec::with_capacity(READ_BUFFER_SIZE),
+            read_buffer: Some(Box::new([0; READ_BUFFER_SIZE])),
             read_position: 0,
+            read_length: 0,
+            last_read_timeout: None,
+            last_write_timeout: None,
         }
     }
 
@@ -361,7 +367,15 @@ impl ServerSock {
 
     #[cfg(feature = "rustls")]
     pub(crate) fn wrap(sock: impl ServerSockTrait, control: Arc<SocketControl>) -> Self {
-        Self::with_control(sock, control)
+        ServerSock {
+            inner: Box::new(sock),
+            control,
+            read_buffer: None,
+            read_position: 0,
+            read_length: 0,
+            last_read_timeout: None,
+            last_write_timeout: None,
+        }
     }
 
     pub(crate) fn control(&self) -> Arc<SocketControl> {
@@ -392,26 +406,25 @@ impl io::Read for ServerSock {
         if buf.is_empty() {
             return Ok(0);
         }
-        if self.read_position == self.read_buffer.len() {
+        let Some(read_buffer) = &mut self.read_buffer else {
+            return self.inner.read(buf);
+        };
+        if self.read_position == self.read_length {
             let timeout = self.control.read_limit()?;
-            self.inner.set_socket_read_timeout(timeout)?;
-            self.read_buffer.resize(READ_BUFFER_SIZE, 0);
-            let read = match self.inner.read(&mut self.read_buffer) {
+            if self.last_read_timeout != Some(timeout) {
+                self.inner.set_socket_read_timeout(timeout)?;
+                self.last_read_timeout = Some(timeout);
+            }
+            let read = match self.inner.read(read_buffer.as_mut_slice()) {
                 Ok(read) => read,
-                Err(mut error) => {
-                    self.read_buffer.truncate(self.read_position);
-                    if error.kind() == io::ErrorKind::WouldBlock
-                        && self.control.read_timeout_active()
-                    {
-                        error = io::Error::new(io::ErrorKind::TimedOut, error);
-                    }
-                    return Err(error);
+                Err(error) => {
+                    return Err(normalize_timeout(error, self.control.read_timeout_active()));
                 }
             };
-            self.read_buffer.truncate(read);
             self.read_position = 0;
+            self.read_length = read;
         }
-        let available = &self.read_buffer[self.read_position..];
+        let available = &read_buffer[self.read_position..self.read_length];
         let count = available.len().min(buf.len());
         buf[..count].copy_from_slice(&available[..count]);
         self.read_position += count;
@@ -421,24 +434,42 @@ impl io::Read for ServerSock {
 
 impl io::Write for ServerSock {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.read_buffer.is_none() {
+            return self.inner.write(buf);
+        }
         let timeout = self.control.write_limit()?;
-        self.inner.set_socket_write_timeout(timeout)?;
+        if self.last_write_timeout != Some(timeout) {
+            self.inner.set_socket_write_timeout(timeout)?;
+            self.last_write_timeout = Some(timeout);
+        }
         self.inner
             .write(buf)
             .map_err(|error| normalize_timeout(error, self.control.write_timeout_active()))
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        if self.read_buffer.is_none() {
+            return self.inner.flush();
+        }
         let timeout = self.control.write_limit()?;
-        self.inner.set_socket_write_timeout(timeout)?;
+        if self.last_write_timeout != Some(timeout) {
+            self.inner.set_socket_write_timeout(timeout)?;
+            self.last_write_timeout = Some(timeout);
+        }
         self.inner
             .flush()
             .map_err(|error| normalize_timeout(error, self.control.write_timeout_active()))
     }
 
     fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
+        if self.read_buffer.is_none() {
+            return self.inner.write_vectored(bufs);
+        }
         let timeout = self.control.write_limit()?;
-        self.inner.set_socket_write_timeout(timeout)?;
+        if self.last_write_timeout != Some(timeout) {
+            self.inner.set_socket_write_timeout(timeout)?;
+            self.last_write_timeout = Some(timeout);
+        }
         self.inner
             .write_vectored(bufs)
             .map_err(|error| normalize_timeout(error, self.control.write_timeout_active()))
@@ -543,6 +574,35 @@ mod tests {
 
     impl ServerSockTrait for WouldBlockSock {}
 
+    #[derive(Debug)]
+    struct TimeoutCountingSock {
+        data: Cursor<Vec<u8>>,
+        timeout_updates: Arc<AtomicUsize>,
+    }
+
+    impl Read for TimeoutCountingSock {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.data.read(buf)
+        }
+    }
+
+    impl Write for TimeoutCountingSock {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl ServerSockTrait for TimeoutCountingSock {
+        fn set_socket_read_timeout(&self, _timeout: Option<std::time::Duration>) -> io::Result<()> {
+            self.timeout_updates.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
     #[test]
     fn read_ahead_preserves_the_next_message() {
         let mut data = Vec::new();
@@ -578,6 +638,35 @@ mod tests {
         sock.read_to_end(&mut output).unwrap();
 
         assert_eq!(output, b"actual wire data");
+    }
+
+    #[test]
+    fn unchanged_socket_timeout_is_not_reset_for_each_refill() {
+        let timeout_updates = Arc::new(AtomicUsize::new(0));
+        let raw = TimeoutCountingSock {
+            data: Cursor::new(vec![1; super::READ_BUFFER_SIZE + 1]),
+            timeout_updates: Arc::clone(&timeout_updates),
+        };
+        let mut sock = ServerSock::new(raw);
+        let mut output = Vec::new();
+
+        sock.read_to_end(&mut output).unwrap();
+
+        assert_eq!(output.len(), super::READ_BUFFER_SIZE + 1);
+        assert_eq!(timeout_updates.load(Ordering::Relaxed), 1);
+    }
+
+    #[cfg(feature = "rustls")]
+    #[test]
+    fn wrapped_socket_uses_passthrough_framing() {
+        let inner = ServerSock::new(CountingSock {
+            data: Cursor::new(Vec::new()),
+            reads: Arc::new(AtomicUsize::new(0)),
+        });
+        let control = inner.control();
+        let outer = ServerSock::wrap(inner, control);
+
+        assert!(outer.read_buffer.is_none());
     }
 
     #[test]
