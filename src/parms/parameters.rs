@@ -145,12 +145,10 @@ impl Parm {
     /// Convert the parameter into a number that can be used to index
     /// an array of values.
     pub const fn index(&self) -> usize {
-        // SAFETY: `Parm` is `repr(u8)`, so every variant has a unique value
-        // representable as `u8`.
-        let idx = unsafe { mem::transmute::<Self, u8>(*self) as usize };
-        // Theoretically, the compiler could assign any index whatover to the Parms.
+        let idx = *self as usize;
+        // Theoretically, the compiler could assign any index whatsoever to the Parms.
         // However, most likely they will be consecutive starting at or near 0.
-        // The compioler will then optimize this away.
+        // The compiler will then optimize this away.
         // If we ever find a compiler which does assign high numbers we can
         // get around it by simply setting PARM_TABLE_SIZE to 256.
         assert!(idx < PARM_TABLE_SIZE);

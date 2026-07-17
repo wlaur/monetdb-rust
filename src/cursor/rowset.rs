@@ -14,14 +14,8 @@ use super::replies::{RResult, ReplyBuf};
 pub struct RowSet {
     buf: ReplyBuf,
     ncols: usize,
-    fields: Vec<Option<(*const u8, usize)>>,
+    fields: Vec<Option<(usize, usize)>>,
 }
-
-// SAFETY: field pointers always refer into `buf`'s owned `Vec<u8>` allocation.
-// Moving a RowSet, including between threads, moves the Vec handle but not its
-// allocation. All mutation requires `&mut self`, and RowSet is not Sync, so the
-// pointed-to bytes cannot be accessed concurrently while fields are installed.
-unsafe impl Send for RowSet {}
 
 // [ 1,→"one"→]↵
 // [ 42,→"forty-two"→]↵
@@ -39,6 +33,10 @@ impl RowSet {
             self.fields.clear();
         }
         ret
+    }
+
+    pub(super) fn has_pending_row(&self) -> bool {
+        self.buf.peek().starts_with(b"[")
     }
 
     fn do_advance(&mut self) -> RResult<bool> {
@@ -70,18 +68,20 @@ impl RowSet {
                     };
                     if char == b'"' {
                         // no backslashes
-                        *field = Some((self.buf.peek().as_ptr(), pos));
+                        *field = Some((self.buf.position(), pos));
                         // skip the data and closing quote
                         self.buf.consume(pos + 1)?;
                         Self::consume_field_separator(&mut self.buf, comma_skip != 0)?;
                     } else {
+                        let start = self.buf.position();
                         let unescaped = self.buf.convert_backslashes(pos)?;
-                        *field = Some((unescaped.as_ptr(), unescaped.len()));
+                        *field = Some((start, unescaped.len()));
                         // buf has already skipped the closing quote
                         Self::consume_field_separator(&mut self.buf, comma_skip != 0)?;
                     }
                 }
                 _ => {
+                    let start = self.buf.position();
                     let rough: &[u8] = self.buf.split(b'\t')?;
                     let adjusted = if comma_skip == 0 {
                         rough
@@ -98,7 +98,7 @@ impl RowSet {
                     *field = if adjusted == b"NULL" {
                         None
                     } else {
-                        Some((adjusted.as_ptr(), adjusted.len()))
+                        Some((start, adjusted.len()))
                     };
                 }
             }
@@ -145,11 +145,7 @@ impl RowSet {
         let Some(field) = field else {
             return Ok(None);
         };
-        // SAFETY: `advance` records only pointers and lengths into `buf`'s stable
-        // allocation. Access requires borrowing this RowSet, and no method can
-        // mutate or replace the allocation through that shared borrow.
-        let slice = unsafe { std::slice::from_raw_parts(field.0, field.1) };
-        Ok(Some(slice))
+        Ok(Some(self.buf.range(field.0, field.1)?))
     }
 
     #[cfg(test)]

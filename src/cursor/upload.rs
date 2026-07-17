@@ -172,6 +172,8 @@ fn send_upload(
         }
     } else {
         let mut prompt = Vec::new();
+        // Every iteration consumes one distinct upload chunk and one server
+        // prompt, so an empty prompt cannot repeat the same request indefinitely.
         for chunk in chunks {
             write_fragment(&mut sock, chunk, true, &mut framed)?;
             prompt.clear();

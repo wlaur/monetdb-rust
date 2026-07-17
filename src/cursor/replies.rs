@@ -49,6 +49,8 @@ pub enum BadReply {
     RowCountMismatch { expected: usize, actual: u64 },
     #[error("export reply starts at row {actual}, expected {expected}")]
     RowOffsetMismatch { expected: u64, actual: u64 },
+    #[error("export reply for {requested} rows at offset {start} contains no row data")]
+    EmptyExportWindow { start: u64, requested: usize },
 }
 
 pub type RResult<T> = Result<T, BadReply>;
@@ -146,6 +148,15 @@ impl ReplyBuf {
         };
         let ret = self.consume(end + 1)?;
         Ok(&mut ret[..end])
+    }
+
+    pub(super) fn position(&self) -> usize {
+        self.pos
+    }
+
+    pub(super) fn range(&self, start: usize, len: usize) -> RResult<&[u8]> {
+        let end = start.checked_add(len).ok_or(BadReply::UnexpectedEnd)?;
+        self.data.get(start..end).ok_or(BadReply::UnexpectedEnd)
     }
 
     pub fn split_str(&mut self, sep: u8, context: &'static str) -> RResult<&str> {
@@ -512,10 +523,16 @@ impl ReplyParser {
         }
         let ncols = ncols as usize;
         // Each of the five column metadata lines needs a `,\t` delimiter for
-        // every column after the first. Reject counts the received reply could
-        // not possibly describe before allocating per-column state.
+        // every column after the first. Also prevent an untrusted header from
+        // amplifying the received reply into a much larger per-column allocation.
         let minimum_metadata_bytes = ncols.saturating_sub(1).saturating_mul(10);
-        if minimum_metadata_bytes > buf.peek().len() {
+        let column_allocation_bytes = ncols
+            .checked_mul(std::mem::size_of::<ResultColumn>())
+            .ok_or(BadReply::TooManyColumns(ncols as u64))?;
+        let maximum_column_allocation = buf.peek().len().saturating_mul(2);
+        if minimum_metadata_bytes > buf.peek().len()
+            || column_allocation_bytes > maximum_column_allocation
+        {
             return Err(BadReply::TooManyColumns(ncols as u64));
         }
         let to_close = (!prepared && rows_included < rows_total).then_some(result_id);
@@ -781,6 +798,15 @@ mod tests {
         assert_eq!(
             ReplyParser::new(response.as_bytes().to_vec()).unwrap_err(),
             BadReply::TooManyColumns(1_000_000)
+        );
+    }
+
+    #[test]
+    fn rejects_column_allocation_larger_than_reply() {
+        let response = format!("&1 17 0 100 0\n{}", " ".repeat(1_000));
+        assert_eq!(
+            ReplyParser::new(response.into_bytes()).unwrap_err(),
+            BadReply::TooManyColumns(100)
         );
     }
 }

@@ -46,7 +46,8 @@ pub enum CursorError {
     /// The operation was explicitly cancelled from another thread.
     #[error("operation was cancelled; connection closed by cancel")]
     Cancelled,
-    /// Cancellation was requested while no operation was running.
+    /// Retained for API compatibility; cancellation is currently idempotent
+    /// when no operation is running and does not return this variant.
     #[error("there is no active operation to cancel")]
     NoActiveOperation,
     #[error(transparent)]
@@ -659,6 +660,7 @@ impl Cursor {
         ReplyParser::parse_export_header(&mut buf, &mut fields)?;
         validate_export_header(&fields, res_id, expected_columns, n, start)?;
         let mut new_row_set = RowSet::new(buf, expected_columns);
+        validate_fetch_progress(&new_row_set, start, n)?;
 
         // If we were reading the initial response, save it.
         // Then install the new rowset, saving the old one if it's the primary.
@@ -704,6 +706,13 @@ fn count_row(next_row: &mut u64, total_rows: u64) -> Result<(), BadReply> {
         return Err(BadReply::TooManyRows { total: total_rows });
     }
     *next_row += 1;
+    Ok(())
+}
+
+fn validate_fetch_progress(row_set: &RowSet, start: u64, requested: usize) -> Result<(), BadReply> {
+    if requested > 0 && !row_set.has_pending_row() {
+        return Err(BadReply::EmptyExportWindow { start, requested });
+    }
     Ok(())
 }
 
@@ -837,6 +846,18 @@ mod tests {
         assert_eq!(
             count_row(&mut next_row, 1),
             Err(BadReply::TooManyRows { total: 1 })
+        );
+    }
+
+    #[test]
+    fn fetched_window_must_contain_a_row() {
+        let row_set = RowSet::new(ReplyBuf::new(Vec::new()), 1);
+        assert_eq!(
+            validate_fetch_progress(&row_set, 7, 3),
+            Err(BadReply::EmptyExportWindow {
+                start: 7,
+                requested: 3
+            })
         );
     }
 }
