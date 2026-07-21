@@ -59,6 +59,6 @@ jobs:
               raise SystemExit(f"MonetDB never became ready: {last}")
           PY
 
-      - run: cargo test --test ci
-      - run: cargo test --test ci --no-default-features
+      - run: cargo test --test ci --features ci-tests
+      - run: cargo test --test ci --no-default-features --features ci-tests
       - run: cargo test --test ci --all-features
