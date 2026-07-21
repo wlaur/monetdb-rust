@@ -31,6 +31,7 @@ undocumented_unsafe_blocks = "warn"
 name = "ci"
 path = "tests/ci/mod.rs"
 harness = true
+required-features = [ "ci-tests" ]
 
 
 [features]
@@ -39,6 +40,7 @@ rustls = [ "dep:rustls", "dep:rustls-platform-verifier" ]
 uuid = [ "dep:uuid" ]
 rust_decimal = [ "dep:rust_decimal" ]
 decimal-rs = [ "dep:decimal-rs" ]
+ci-tests = []
 
 
 [dependencies]

@@ -52,7 +52,7 @@ let conn = Connection::new(parms)?;
 Current status
 --------------
 
-* MonetDB Dec2025 (11.55.7) and later are supported. Protocol compatibility
+* MonetDB Dec2025 (11.55.0) and later are supported. Protocol compatibility
   with older releases is not maintained.
 
 * Rust 2024 edition; current stable Rust is the supported toolchain.
@@ -69,6 +69,7 @@ Current status
 
 * Optional TLS 1.3 (`monetdbs://`) support includes platform verification,
   custom certificate authorities, SHA-256 certificate pins, and mutual TLS.
+  Certificate pins require at least 16 hexadecimal digits (64 bits).
 
 * Binary result windows are available through `Cursor::fetch_binary()` and
   `Cursor::fetch_binary_into()`.
