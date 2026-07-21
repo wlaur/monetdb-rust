@@ -314,9 +314,9 @@ EXPECT cert=C:\TEMP\cert.pem
 
 ```test
 EXPECT certhash=
-ACCEPT monetdbs:///?certhash=sha256:001122ff
-ACCEPT monetdbs:///?certhash=sha256:00:11:22:ff
-ACCEPT monetdbs:///?certhash=sha256:::::aa::ff:::::
+ACCEPT monetdbs:///?certhash=sha256:001122ff001122ff
+ACCEPT monetdbs:///?certhash=sha256:00:11:22:ff:00:11:22:ff
+ACCEPT monetdbs:///?certhash=sha256:::::aa::ff::aa::ff::aa::ff::aa::ff:::::
 ACCEPT monetdbs:///?certhash=sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ```
 
@@ -329,6 +329,7 @@ ACCEPT monetdbs:///?certhash=sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b
 
 REJECT monetdbs:///?certhash=sha256:
 REJECT monetdbs:///?certhash=sha256:::::
+REJECT monetdbs:///?certhash=sha256:001122ff
 ```
 
 ```test
@@ -937,9 +938,9 @@ EXPECT valid=no
 ```test
 ACCEPT monetdbs:///?cert=/a/path
 EXPECT connect_tls_verify=cert
-ACCEPT monetdbs:///?certhash=sha256:aa
+ACCEPT monetdbs:///?certhash=sha256:0011223344556677
 EXPECT connect_tls_verify=hash
-ACCEPT monetdbs:///?cert=/a/path&certhash=sha256:aa
+ACCEPT monetdbs:///?cert=/a/path&certhash=sha256:0011223344556677
 EXPECT connect_tls_verify=hash
 REJECT monetdb:///?cert=/a/path
 REJECT monetdb:///?certhash=sha256:aa
@@ -956,7 +957,7 @@ EXPECT connect_tls_verify=
 ```test
 SET tls=off
 SET cert=
-SET certhash=sha256:abcdef
+SET certhash=sha256:0011223344556677
 EXPECT valid=no
 ```
 
@@ -970,7 +971,7 @@ EXPECT valid=no
 ```test
 SET tls=off
 SET cert=/foo
-SET certhash=sha256:abcdef
+SET certhash=sha256:0011223344556677
 EXPECT valid=no
 ```
 
@@ -985,7 +986,7 @@ EXPECT connect_tls_verify=system
 ```test
 SET tls=on
 SET cert=
-SET certhash=sha256:abcdef
+SET certhash=sha256:0011223344556677
 EXPECT valid=yes
 EXPECT connect_tls_verify=hash
 ```
@@ -1001,7 +1002,7 @@ EXPECT connect_tls_verify=cert
 ```test
 SET tls=on
 SET cert=/foo
-SET certhash=sha256:abcdef
+SET certhash=sha256:0011223344556677
 EXPECT valid=yes
 EXPECT connect_tls_verify=hash
 ```

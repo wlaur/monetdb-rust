@@ -529,7 +529,10 @@ impl Cursor {
     /// Fetch a binary row window into a caller-owned buffer.
     ///
     /// The buffer is cleared but retains its allocation, allowing callers to
-    /// reuse response capacity across successive windows.
+    /// reuse response capacity across successive windows. Only the export
+    /// header is validated here. The payload is returned unvalidated; callers
+    /// must bounds-check its table of contents and column ranges and detect
+    /// per-column error entries before reading them.
     pub fn fetch_binary_into(
         &mut self,
         start: u64,

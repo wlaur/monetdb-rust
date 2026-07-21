@@ -561,8 +561,9 @@ impl ReplyParser {
             return Err(BadReply::TooManyColumns(ncols));
         }
         let ncols = ncols as usize;
-        // Each of the five column metadata lines needs a `,\t` delimiter for
-        // every column after the first. Also prevent an untrusted header from
+        // Each column metadata line needs a `,\t` delimiter for every column
+        // after the first. Normal results have five lines; the documented
+        // EXPLAIN exception has four. Also prevent an untrusted header from
         // amplifying the received reply into a much larger per-column allocation.
         let minimum_metadata_bytes = ncols.saturating_sub(1).saturating_mul(10);
         let column_allocation_bytes = ncols
@@ -616,7 +617,7 @@ impl ReplyParser {
 
         // `sql/backends/monet5/sql_gencode.c` handcrafts EXPLAIN results with
         // four metadata lines and then '=' rows, omitting `typesizes`.
-        if buf.peek().starts_with(b"% ") {
+        if !buf.peek().starts_with(b"=") {
             Self::parse_data_header(&mut buf, "typesizes", &mut columns, &|col, s| {
                 if let MonetType::Decimal(precision, scale) = &mut col.typ {
                     let Some((pr, sc)) = s.split_once(' ') else {
@@ -858,6 +859,50 @@ mod tests {
         assert_eq!(columns[0].name(), "rel");
         assert!(row_set.advance().unwrap());
         assert_eq!(row_set.get_field_raw(0).unwrap(), Some(&b"project ("[..]));
+    }
+
+    #[test]
+    fn accepts_explain_result_without_typesizes() {
+        let response = concat!(
+            "&1 0 1 1 1\n",
+            "% .explain # table_name\n",
+            "% rel # name\n",
+            "% varchar # type\n",
+            "% 0 # length\n",
+            "=project (\n",
+        );
+        let ReplyParser::Data(ResultSet { mut row_set, .. }) =
+            ReplyParser::new(response.as_bytes().to_vec()).unwrap()
+        else {
+            panic!("expected result set");
+        };
+        assert!(row_set.advance().unwrap());
+        assert_eq!(row_set.get_field_raw(0).unwrap(), Some(&b"project ("[..]));
+    }
+
+    #[test]
+    fn rejects_missing_truncated_or_mislabeled_typesizes() {
+        let prefix = concat!(
+            "&1 17 1 1 1\n",
+            "% t # table_name\n",
+            "% c # name\n",
+            "% int # type\n",
+            "% 32 # length\n",
+        );
+        for suffix in [
+            "[ 1\t]\n",
+            "% 0 0 # typesizes",
+            "% 0 0 # type_sizes\n[ 1\t]\n",
+        ] {
+            let parsed = ReplyParser::new(format!("{prefix}{suffix}").into_bytes());
+            assert!(matches!(
+                parsed,
+                Err(BadReply::UnexpectedHeader(_)
+                    | BadReply::InvalidHeader(_)
+                    | BadReply::UnexpectedEnd
+                    | BadReply::SepNotFound(_))
+            ));
+        }
     }
 
     #[test]

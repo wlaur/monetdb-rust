@@ -1383,7 +1383,9 @@ impl Validated<'_> {
                 _ => return Err(ParmError::InvalidValue(Parm::CertHash)),
             }
         }
-        if digits.is_empty() {
+        // A shorter prefix is technically valid MAPI syntax, but provides too
+        // little authentication strength for a TLS certificate pin.
+        if digits.len() < 16 {
             return Err(ParmError::InvalidValue(Parm::CertHash));
         }
         Ok(digits)
