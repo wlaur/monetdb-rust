@@ -15,6 +15,7 @@ pub struct RowSet {
     buf: ReplyBuf,
     ncols: usize,
     fields: Vec<Option<(usize, usize)>>,
+    noslice: bool,
 }
 
 // [ 1,→"one"→]↵
@@ -24,7 +25,21 @@ pub struct RowSet {
 impl RowSet {
     pub fn new(buf: ReplyBuf, ncols: usize) -> Self {
         let fields = vec![None; ncols];
-        RowSet { buf, ncols, fields }
+        RowSet {
+            buf,
+            ncols,
+            fields,
+            noslice: false,
+        }
+    }
+
+    pub(super) fn new_noslice(buf: ReplyBuf) -> Self {
+        RowSet {
+            buf,
+            ncols: 1,
+            fields: vec![None],
+            noslice: true,
+        }
     }
 
     pub fn advance(&mut self) -> RResult<bool> {
@@ -40,6 +55,17 @@ impl RowSet {
     }
 
     fn do_advance(&mut self) -> RResult<bool> {
+        if self.noslice {
+            if !self.buf.peek().starts_with(b"=") {
+                self.fields.fill(None);
+                return Ok(false);
+            }
+            self.buf.consume(1)?;
+            let start = self.buf.position();
+            let value = self.buf.split(b'\n')?;
+            self.fields[0] = Some((start, value.len()));
+            return Ok(true);
+        }
         if !self.buf.peek().starts_with(b"[") {
             self.fields.fill(None);
             return Ok(false);
@@ -216,6 +242,19 @@ fn malformed_rows_return_errors_instead_of_panicking() {
         let mut row_set = RowSet::new(ReplyBuf::new(input.into()), columns);
         assert_eq!(row_set.advance(), Err(expected), "input {input:?}");
     }
+}
+
+#[test]
+fn test_tuple_without_slicing_rows() {
+    let mut rows = RowSet::new_noslice(ReplyBuf::new(b"=project (\n=| expression\n=)\n".to_vec()));
+
+    assert_eq!(rows.advance(), Ok(true));
+    assert_eq!(rows.get_str(0), Ok(Some("project (")));
+    assert_eq!(rows.advance(), Ok(true));
+    assert_eq!(rows.get_str(0), Ok(Some("| expression")));
+    assert_eq!(rows.advance(), Ok(true));
+    assert_eq!(rows.get_str(0), Ok(Some(")")));
+    assert_eq!(rows.advance(), Ok(false));
 }
 
 #[test]

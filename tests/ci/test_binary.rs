@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use monetdb::Endian;
 
 use crate::context::get_server;
@@ -337,5 +337,57 @@ fn test_server_abort_during_binary_upload_preserves_connection() -> Result<()> {
     assert!(cursor.next_row()?);
     assert_eq!(cursor.get_i32(0)?, Some(42));
     cursor.execute("DROP TABLE monetdb_rust_aborted_binary_upload")?;
+    Ok(())
+}
+
+#[test]
+fn test_raw_client_file_transfers_are_refused_without_desynchronizing() -> Result<()> {
+    let connection = get_server().connect()?;
+    if connection.metadata()?.version() < (11, 41, 0) {
+        return Ok(());
+    }
+    let mut cursor = connection.cursor();
+    cursor.execute("DROP TABLE IF EXISTS monetdb_rust_raw_client_copy")?;
+    cursor.execute("CREATE TABLE monetdb_rust_raw_client_copy(i INT)")?;
+
+    for statement in [
+        "COPY INTO monetdb_rust_raw_client_copy FROM 'input.csv' ON CLIENT",
+        "COPY SELECT 1 INTO 'output.csv' ON CLIENT",
+    ] {
+        let error = cursor.execute(statement).unwrap_err();
+        assert!(
+            error.to_string().contains("file transfer"),
+            "unexpected error: {error}"
+        );
+        cursor.execute("SELECT 42")?;
+        assert!(cursor.next_row()?);
+        assert_eq!(cursor.get_i32(0)?, Some(42));
+    }
+
+    cursor.execute("DROP TABLE monetdb_rust_raw_client_copy")?;
+    Ok(())
+}
+
+#[test]
+fn test_explain_rows_and_connection_reuse() -> Result<()> {
+    let connection = get_server().connect()?;
+    let mut cursor = connection.cursor();
+
+    cursor
+        .execute("EXPLAIN SELECT 1")
+        .context("executing EXPLAIN")?;
+    assert!(!cursor.column_metadata()[0].name().is_empty());
+    let mut plan = Vec::new();
+    while cursor.next_row().context("reading an EXPLAIN row")? {
+        plan.push(cursor.get_str(0)?.unwrap().to_owned());
+    }
+    assert!(plan.iter().all(|line| !line.is_empty()));
+    assert!(!plan.is_empty());
+
+    cursor
+        .execute("SELECT 42")
+        .context("executing the sentinel query")?;
+    assert!(cursor.next_row()?);
+    assert_eq!(cursor.get_i32(0)?, Some(42));
     Ok(())
 }

@@ -6,7 +6,7 @@
 //
 // Copyright 2024 MonetDB Foundation
 
-use std::{error, mem, str::FromStr};
+use std::{borrow::Cow, error, mem, str::FromStr};
 
 use bstr::{BStr, BString, ByteSlice};
 use memchr::memmem;
@@ -39,6 +39,8 @@ pub enum BadReply {
     TooManyRows { total: u64 },
     #[error("invalid backslash escape in result set")]
     InvalidBackslashEscape,
+    #[error("invalid quoted identifier in result metadata")]
+    InvalidQuotedIdentifier,
     #[error("column index {0} out of bounds, have only {1} columns")]
     ColumnIndexOutOfBounds(usize, usize),
     #[error("result id {actual} in export reply does not match requested result id {expected}")]
@@ -419,6 +421,8 @@ impl ReplyParser {
             [b'&', b'4', ..] => Self::parse_autocommit_status(buf),
             [b'&', b'5', ..] => Self::parse_data(buf, true),
             [b'!', ..] => Self::parse_error(buf),
+            [b'=', b'O', b'K', b'\n', ..] => Self::parse_ok(buf),
+            [b'=', ..] => Self::parse_noslice(buf),
             _ => {
                 let line = ahead.as_bstr().lines().next().unwrap();
                 Err(BadReply::UnknownResponse(line.into()))
@@ -442,6 +446,41 @@ impl ReplyParser {
             buf,
             affected: None,
         })
+    }
+
+    fn parse_ok(mut buf: ReplyBuf) -> RResult<ReplyParser> {
+        let line = buf.split_str(b'\n', "success line")?;
+        if line != "=OK" {
+            return Err(BadReply::InvalidHeader(format!("expected '=OK': {line}")));
+        }
+        Ok(ReplyParser::Success {
+            buf,
+            affected: None,
+        })
+    }
+
+    fn parse_noslice(buf: ReplyBuf) -> RResult<ReplyParser> {
+        // MonetDB's `testing/mapicursor.py` names '=' replies
+        // `MSG_TUPLE_NOSLICE`; EXPLAIN emits one such line per plan row.
+        let rows = buf
+            .peek()
+            .as_bstr()
+            .lines()
+            .take_while(|line| line.starts_with(b"="))
+            .count();
+        let total_rows = u64::try_from(rows)
+            .map_err(|_| BadReply::InvalidHeader("too many '=' result rows".into()))?;
+        Ok(ReplyParser::Data(ResultSet {
+            result_id: 0,
+            prepared: false,
+            next_row: 0,
+            total_rows,
+            rows_included: total_rows,
+            columns: vec![ResultColumn::new("rel", MonetType::Varchar(0))],
+            row_set: RowSet::new_noslice(buf),
+            to_close: None,
+            stashed: None,
+        }))
     }
 
     pub(crate) fn parse_header<T: FromStr>(buf: &mut ReplyBuf, dest: &mut [T]) -> RResult<()> {
@@ -551,7 +590,10 @@ impl ReplyParser {
 
         // parse the name header
         Self::parse_data_header(&mut buf, "name", &mut columns, &|col, s| {
-            col.name.push_str(s);
+            // `sql/backends/monet5/sql_result.c:mvc_export_head` surrounds
+            // names containing SQL separators with double quotes and
+            // backslash-escapes embedded quotes and backslashes.
+            col.name.push_str(&decode_column_name(s)?);
             Ok(())
         })?;
 
@@ -572,19 +614,26 @@ impl ReplyParser {
             Ok(())
         })?;
 
-        // parse the typesizes header
-        Self::parse_data_header(&mut buf, "typesizes", &mut columns, &|col, s| {
-            if let MonetType::Decimal(precision, scale) = &mut col.typ {
-                let Some((pr, sc)) = s.split_once(' ') else {
-                    return Err("expect typesizes to be PRECISION <space> SCALE".into());
+        // `sql/backends/monet5/sql_gencode.c` handcrafts EXPLAIN results with
+        // four metadata lines and then '=' rows, omitting `typesizes`.
+        if buf.peek().starts_with(b"% ") {
+            Self::parse_data_header(&mut buf, "typesizes", &mut columns, &|col, s| {
+                if let MonetType::Decimal(precision, scale) = &mut col.typ {
+                    let Some((pr, sc)) = s.split_once(' ') else {
+                        return Err("expect typesizes to be PRECISION <space> SCALE".into());
+                    };
+                    *precision = pr.parse()?;
+                    *scale = sc.parse()?;
                 };
-                *precision = pr.parse()?;
-                *scale = sc.parse()?;
-            };
-            Ok(())
-        })?;
+                Ok(())
+            })?;
+        }
 
-        let row_set = RowSet::new(buf, columns.len());
+        let row_set = if buf.peek().starts_with(b"=") {
+            RowSet::new_noslice(buf)
+        } else {
+            RowSet::new(buf, columns.len())
+        };
         Ok(ReplyParser::Data(ResultSet {
             result_id,
             prepared,
@@ -640,6 +689,31 @@ impl ReplyParser {
         }
         Ok(())
     }
+}
+
+fn decode_column_name(rendered: &str) -> RResult<Cow<'_, str>> {
+    if !rendered.starts_with('"') {
+        return Ok(Cow::Borrowed(rendered));
+    }
+    let Some(inner) = rendered
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+    else {
+        return Err(BadReply::InvalidQuotedIdentifier);
+    };
+    let mut decoded = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(character) = chars.next() {
+        if character != '\\' {
+            decoded.push(character);
+            continue;
+        }
+        match chars.next() {
+            Some(escaped @ ('"' | '\\')) => decoded.push(escaped),
+            _ => return Err(BadReply::InvalidQuotedIdentifier),
+        }
+    }
+    Ok(Cow::Owned(decoded))
 }
 
 /// Holds information about a column of a result set.
@@ -740,6 +814,50 @@ mod tests {
         assert!(prepared);
         assert_eq!(total_rows, 1);
         assert_eq!(to_close, None);
+    }
+
+    #[test]
+    fn decodes_quoted_column_names() {
+        let response = concat!(
+            "&1 17 0 5 0\n",
+            "% t,\tt,\tt,\tt,\tt # table_name\n",
+            "% \"a\\\"b\",\t\"c d\",\tselect,\tMiXeD,\tä # name\n",
+            "% int,\tint,\tint,\tint,\tint # type\n",
+            "% 32,\t32,\t32,\t32,\t32 # length\n",
+            "% 0 0,\t0 0,\t0 0,\t0 0,\t0 0 # typesizes\n",
+        );
+        let ReplyParser::Data(ResultSet { columns, .. }) =
+            ReplyParser::new(response.as_bytes().to_vec()).unwrap()
+        else {
+            panic!("expected result set");
+        };
+        assert_eq!(
+            columns
+                .iter()
+                .map(|column| column.name())
+                .collect::<Vec<_>>(),
+            ["a\"b", "c d", "select", "MiXeD", "ä"]
+        );
+    }
+
+    #[test]
+    fn parses_tuple_without_slicing_result() {
+        let response = b"=project (\n=| expression\n=)\n".to_vec();
+        let ReplyParser::Data(ResultSet {
+            total_rows,
+            rows_included,
+            columns,
+            mut row_set,
+            ..
+        }) = ReplyParser::new(response).unwrap()
+        else {
+            panic!("expected result set");
+        };
+        assert_eq!(total_rows, 3);
+        assert_eq!(rows_included, 3);
+        assert_eq!(columns[0].name(), "rel");
+        assert!(row_set.advance().unwrap());
+        assert_eq!(row_set.get_field_raw(0).unwrap(), Some(&b"project ("[..]));
     }
 
     #[test]
