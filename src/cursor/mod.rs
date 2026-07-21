@@ -266,7 +266,16 @@ impl Cursor {
         let mut vec = self.replies.take_buffer();
         let command = &[b"s", statements.as_bytes(), b"\n;"];
 
-        self.command(command, &mut vec)?;
+        self.command_with_uploads(
+            command,
+            &mut vec,
+            upload::DEFAULT_UPLOAD_CHUNK_SIZE,
+            |filename| {
+                Err(CursorError::FileTransfer(format!(
+                    "raw execute does not provide client file {filename:?}; use a file-transfer API"
+                )))
+            },
+        )?;
 
         let error = ReplyParser::detect_errors(&vec);
 
