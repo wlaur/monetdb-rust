@@ -123,3 +123,13 @@ The `monetdb` crate defines these optional features:
 
 * **rust_decimal** and **decimal-rs** enable conversions to the corresponding
   decimal crates.
+
+Testing
+-------
+
+`cargo test` runs the serverless unit and documentation suites. The internal
+`ci-tests` feature enables the live integration target, so
+`cargo test --all-features` requires `CI_SERVER_URL` to name a running MonetDB
+Dec2025 (11.55.0+) server. Run `cargo test --all-features --lib` and
+`cargo test --all-features --doc` when checking every library feature without
+a server.

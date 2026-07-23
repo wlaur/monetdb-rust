@@ -320,12 +320,11 @@ ACCEPT monetdbs:///?certhash=sha256:::::aa::ff::aa::ff::aa::ff::aa::ff:::::
 ACCEPT monetdbs:///?certhash=sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ```
 
-This string of hexdigits is longer than the length of a SHA-256 digest.
-It still parses, it will just never match.
+Strings longer than a SHA-256 digest can never match and are rejected.
 
 ```test
-ACCEPT monetdbs:///?certhash=sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8550
-ACCEPT monetdbs:///?certhash=sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855000000000000000000000000000000000000000001
+REJECT monetdbs:///?certhash=sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8550
+REJECT monetdbs:///?certhash=sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855000000000000000000000000000000000000000001
 
 REJECT monetdbs:///?certhash=sha256:
 REJECT monetdbs:///?certhash=sha256:::::

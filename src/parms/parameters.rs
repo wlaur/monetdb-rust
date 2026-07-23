@@ -1385,7 +1385,7 @@ impl Validated<'_> {
         }
         // A shorter prefix is technically valid MAPI syntax, but provides too
         // little authentication strength for a TLS certificate pin.
-        if digits.len() < 16 {
+        if !(16..=64).contains(&digits.len()) {
             return Err(ParmError::InvalidValue(Parm::CertHash));
         }
         Ok(digits)
@@ -1415,6 +1415,14 @@ fn validation_rejects_non_positive_reply_sizes() {
             Err(ParmError::InvalidValue(Parm::ReplySize))
         ));
     }
+}
+
+#[test]
+fn validation_rejects_impossible_certhash_lengths() {
+    assert_eq!(
+        Validated::valid_certhash(&format!("sha256:{}", "a".repeat(65))),
+        Err(ParmError::InvalidValue(Parm::CertHash))
+    );
 }
 
 #[test]
