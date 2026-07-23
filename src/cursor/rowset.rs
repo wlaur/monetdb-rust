@@ -154,8 +154,9 @@ impl RowSet {
     }
 
     pub fn finish(mut self) -> RResult<ReplyBuf> {
-        let boundary = [b'&', b'=']
-            .into_iter()
+        let boundary = b"&="
+            .iter()
+            .copied()
             .filter_map(|first| self.buf.find_line(first))
             .min();
         if let Some(idx) = boundary {
