@@ -127,7 +127,8 @@ impl RawTime {
         Ok(time)
     }
 
-    pub fn microseconds(&self) -> u32 {
+    /// Return microseconds elapsed within the current minute.
+    pub fn microseconds_within_minute(&self) -> u32 {
         self.microseconds + 1_000_000 * self.seconds as u32
     }
 }

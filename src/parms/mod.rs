@@ -15,7 +15,7 @@
 //! really care whether these are specified as strings or typed values such as
 //! `bool` or `i32`.
 //!
-//! Type [`Parameters`] holds an almost arbitray mapping between Parms and
+//! Type [`Parameters`] holds an almost arbitrary mapping between Parms and
 //! Values. The values can be invalid or inconsistent. It has a getter and
 //! setter for the Value of a Parm, and a large number of typed setters such as
 //! `set_autocommit`. These setters come in two varieties: `set_autocommit(&mut
@@ -59,8 +59,8 @@ pub enum ParmError {
     /// An URL was invalid for the given reason
     #[error("invalid url: {0}")]
     InvalidUrl(String),
-    #[error("invalid percent encoding in url")]
     /// URL percent encoding was invalid
+    #[error("invalid percent encoding in url")]
     InvalidPercentEncoding,
     /// After percent decoding the result was not valid UTF-8.
     #[error("invalid utf-8 after percent decoding url")]
@@ -69,7 +69,7 @@ pub enum ParmError {
     #[error("cannot combine 'host' and 'sock'")]
     HostSockConflict,
     /// The given parameter is only valid when TLS is enabled
-    #[error("parameter '{0}' is only valid with TLS is enabled")]
+    #[error("parameter '{0}' is only valid when TLS is enabled")]
     OnlyWithTls(Parm),
     /// The [`Parm::ClientCert`] parameter requires [`Parm::ClientKey`] as well.
     #[error("parameter 'clientcert' requires 'clientkey' as well")]

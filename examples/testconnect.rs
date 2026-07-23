@@ -28,7 +28,7 @@ fn main() -> AResult<()> {
 
     let mut arg_iter = env::args().skip(1);
     let Some(url) = arg_iter.next() else {
-        bail!("Usage: connect URL");
+        bail!("Usage: testconnect URL");
     };
 
     let mut parms = Parameters::default()
@@ -75,8 +75,6 @@ fn main() -> AResult<()> {
                             }
                         }
                     }
-                    // let rs = cursor.temporary_get_result_set()?.unwrap().trim_end();
-                    // println!("{rs}")
                 } else {
                     println!("OK, {row_count} affected rows");
                 }

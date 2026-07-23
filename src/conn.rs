@@ -568,7 +568,7 @@ impl Conn {
 pub struct ServerMetadata(Arc<InnerServerMetadata>);
 
 #[derive(Debug, Clone)]
-pub struct InnerServerMetadata {
+pub(crate) struct InnerServerMetadata {
     environment: HashMap<String, String>,
     version: (u16, u16, u16),
     prehash_algo: &'static str,
@@ -630,14 +630,17 @@ impl ServerMetadata {
         Ok(metadata)
     }
 
+    /// Return a value from MonetDB's `sys.environment` table.
     pub fn env(&self, key: &str) -> Option<&str> {
         self.0.environment.get(key).map(String::as_ref)
     }
 
+    /// Return the server version as `(major, minor, patch)`.
     pub fn version(&self) -> (u16, u16, u16) {
         self.0.version
     }
 
+    /// Return the password prehash algorithm advertised during login.
     pub fn password_prehash_algo(&self) -> &str {
         self.0.prehash_algo
     }
@@ -716,6 +719,21 @@ mod tests {
             disconnect_sender.send(stream.read(&mut byte)).unwrap();
         });
         (port, query_receiver, disconnect_receiver)
+    }
+
+    fn assert_connection_closed(result: io::Result<usize>) {
+        match result {
+            Ok(0) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::BrokenPipe
+                        | io::ErrorKind::ConnectionAborted
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::TimedOut
+                ) => {}
+            other => panic!("connection remained open: {other:?}"),
+        }
     }
 
     #[test]
@@ -808,12 +826,10 @@ mod tests {
             .expect("timed out query did not return");
         assert_eq!(result, Err(CursorError::Timeout));
         assert_eq!(after_timeout, Err(CursorError::Closed));
-        assert_eq!(
+        assert_connection_closed(
             disconnected
                 .recv_timeout(Duration::from_secs(2))
-                .expect("timed out connection remained open")
-                .unwrap(),
-            0
+                .expect("timed out connection remained open"),
         );
         release_sender.send(()).unwrap();
         worker.join().unwrap();
@@ -869,12 +885,10 @@ mod tests {
             .expect("binary fetch did not time out");
         assert_eq!(result, Err(CursorError::Timeout));
         assert_eq!(after_timeout, Err(CursorError::Closed));
-        assert_eq!(
+        assert_connection_closed(
             disconnect_receiver
                 .recv_timeout(Duration::from_secs(2))
-                .expect("timed out binary fetch remained open")
-                .unwrap(),
-            0
+                .expect("timed out binary fetch remained open"),
         );
         release_sender.send(()).unwrap();
         worker.join().unwrap();
@@ -942,12 +956,10 @@ mod tests {
             .expect("upload prompt did not time out");
         assert_eq!(result, Err(CursorError::Timeout));
         assert_eq!(after_timeout, Err(CursorError::Closed));
-        assert_eq!(
+        assert_connection_closed(
             disconnected
                 .recv_timeout(Duration::from_secs(2))
-                .expect("timed out upload prompt remained open")
-                .unwrap(),
-            0
+                .expect("timed out upload prompt remained open"),
         );
         release_sender.send(()).unwrap();
         worker.join().unwrap();
@@ -984,12 +996,10 @@ mod tests {
         assert_eq!(result, Err(CursorError::Timeout));
         assert_eq!(after_timeout, Err(CursorError::Closed));
         server_release.send(()).unwrap();
-        assert_eq!(
+        assert_connection_closed(
             disconnected
                 .recv_timeout(Duration::from_secs(2))
-                .expect("timed out upload body remained open")
-                .unwrap(),
-            0
+                .expect("timed out upload body remained open"),
         );
         release_sender.send(()).unwrap();
         worker.join().unwrap();

@@ -53,6 +53,7 @@ pub enum Parm {
     OperationTimeout,
     ClientInfo,
     ClientApplication,
+    ClientPrefix,
     ClientRemark,
     MaxResponseSize,
 
@@ -92,6 +93,7 @@ impl Parm {
             Self::OperationTimeout,
             Self::ClientInfo,
             Self::ClientApplication,
+            Self::ClientPrefix,
             Self::ClientRemark,
             Self::MaxResponseSize,
             Self::TableSchema,
@@ -131,6 +133,7 @@ impl Parm {
             Parm::OperationTimeout => "operation_timeout",
             Parm::ClientInfo => "client_info",
             Parm::ClientApplication => "client_application",
+            Parm::ClientPrefix => "client_prefix",
             Parm::ClientRemark => "client_remark",
             Parm::MaxResponseSize => "max_response_size",
             Parm::TableSchema => "tableschema",
@@ -175,7 +178,6 @@ impl Parm {
         name.contains('_')
     }
 
-    #[allow(dead_code)]
     pub(crate) fn parm_type(&self) -> ParmType {
         use Parm::*;
         use ParmType::*;
@@ -227,6 +229,7 @@ impl FromStr for Parm {
             "operation_timeout" => Ok(Self::OperationTimeout),
             "client_info" => Ok(Self::ClientInfo),
             "client_application" => Ok(Self::ClientApplication),
+            "client_prefix" => Ok(Self::ClientPrefix),
             "client_remark" => Ok(Self::ClientRemark),
             "max_response_size" => Ok(Self::MaxResponseSize),
             "tableschema" => Ok(Self::TableSchema),
@@ -278,6 +281,7 @@ fn test_parm_names() {
         Parm::from_str("client_application"),
         Ok(Parm::ClientApplication)
     );
+    assert_eq!(Parm::from_str("client_prefix"), Ok(Parm::ClientPrefix));
     assert_eq!(Parm::from_str("client_remark"), Ok(Parm::ClientRemark));
     assert_eq!(
         Parm::from_str("max_response_size"),
@@ -348,7 +352,7 @@ impl Value {
         }
     }
 
-    /// Try to convert the value to an `bool`
+    /// Try to convert the value to an integer.
     pub fn int_value(&self) -> Option<i64> {
         match self {
             Value::Bool(_) => None,
@@ -495,7 +499,7 @@ impl From<isize> for Value {
 /// If you want to create a table indexed by [`Parm`], the table must
 /// have at least this number of elements. Use [`Parm::index`] to convert
 /// Parms to usizes.
-pub const PARM_TABLE_SIZE: usize = 34;
+pub const PARM_TABLE_SIZE: usize = 35;
 
 #[test]
 fn test_parm_table_size() {
@@ -606,7 +610,7 @@ const fn default_parameter_value_by_index(idx: usize) -> Value {
     } else if idx == ReplySize.index() {
         Value::Int(200)
     } else if idx == Binary.index() {
-        Value::from_static("on") // we can't yet, but we'd like to
+        Value::from_static("on")
     } else if idx == ClientInfo.index() {
         Value::Bool(true)
     } else if idx == ConnectTimeout.index() {
@@ -1014,6 +1018,15 @@ impl Parameters {
         Ok(self)
     }
 
+    pub fn set_client_prefix(&mut self, value: &str) -> ParmResult<()> {
+        self.set(Parm::ClientPrefix, value)
+    }
+
+    pub fn with_client_prefix(mut self, value: &str) -> ParmResult<Parameters> {
+        self.set_client_prefix(value)?;
+        Ok(self)
+    }
+
     pub fn set_client_remark(&mut self, value: &str) -> ParmResult<()> {
         self.set(Parm::ClientRemark, value)
     }
@@ -1023,7 +1036,7 @@ impl Parameters {
         Ok(self)
     }
 
-    /// Limit the size in bytes of any post-login protocol message.
+    /// Set the maximum size in bytes of any post-login protocol message.
     pub fn set_max_response_size(&mut self, value: impl Into<i64>) -> ParmResult<()> {
         self.set(Parm::MaxResponseSize, value.into())
     }
@@ -1036,11 +1049,11 @@ impl Parameters {
 }
 
 /// Indicates how the TLS certificate of the server must be verified.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum TlsVerify {
     /// No verification.
     Off,
-    /// Compute the SHA-256 hash of the DER form of the leave certificate and check if it starts
+    /// Compute the SHA-256 hash of the DER form of the leaf certificate and check if it starts
     /// with the hexadecimal digits given by [`Parm::CertHash`].
     Hash,
     /// Verify that the server certificate is signed by the certificate given by [`Parm::Cert`].
@@ -1068,6 +1081,7 @@ pub struct Validated<'a> {
     pub schema: Cow<'a, str>,
     pub client_info: bool,
     pub client_application: Cow<'a, str>,
+    pub client_prefix: Cow<'a, str>,
     pub client_remark: Cow<'a, str>,
     pub connect_timezone_seconds: Option<i32>,
     pub connect_scan: bool,
@@ -1101,6 +1115,7 @@ impl fmt::Debug for Validated<'_> {
             .field("schema", &self.schema)
             .field("client_info", &self.client_info)
             .field("client_application", &self.client_application)
+            .field("client_prefix", &self.client_prefix)
             .field("client_remark", &self.client_remark)
             .field("connect_timezone_seconds", &self.connect_timezone_seconds)
             .field("connect_scan", &self.connect_scan)
@@ -1122,7 +1137,6 @@ impl fmt::Debug for Validated<'_> {
 }
 
 impl Validated<'_> {
-    #[allow(unused_variables)]
     fn new(parms: &Parameters) -> ParmResult<Validated<'_>> {
         use Parm::*;
         use ParmError::*;
@@ -1155,6 +1169,7 @@ impl Validated<'_> {
 
         let raw_client_info = parms.get_bool(ClientInfo)?;
         let raw_client_application = parms.get_str(ClientApplication)?;
+        let raw_client_prefix = parms.get_str(ClientPrefix)?;
         let raw_client_remark = parms.get_str(ClientRemark)?;
 
         let raw_tableschema: Cow<str> = parms.get_str(TableSchema)?;
@@ -1224,6 +1239,9 @@ impl Validated<'_> {
         // Specific to this crate
         if raw_client_info && raw_client_application.contains('\n') {
             return Err(ClientInfoNewline(ClientApplication));
+        }
+        if raw_client_info && raw_client_prefix.contains('\n') {
+            return Err(ClientInfoNewline(ClientPrefix));
         }
         if raw_client_info && raw_client_remark.contains('\n') {
             return Err(ClientInfoNewline(ClientRemark));
@@ -1324,6 +1342,7 @@ impl Validated<'_> {
             max_response_size,
             client_info: raw_client_info,
             client_application: raw_client_application,
+            client_prefix: raw_client_prefix,
             client_remark: raw_client_remark,
             connect_scan,
             connect_unix,

@@ -1,120 +1,23 @@
+- Connection and query APIs
 
-- Minimal features (very first release)
+  - [ ] high-level prepared-statement parameter binding
 
-  - [X] typed getters
+  - [ ] transaction convenience methods
 
-  - [X] Xexport
+  - [ ] result-set scrolling
 
-  - [X] Xclose
+  - [ ] Unix-domain socket discovery
 
-  - [X] license file
+  - [ ] non-SQL language support
 
-  - [ ] execute with bound parameters
+  - [ ] asynchronous API
 
-  - [ ] start transaction / commit / rollback
+- Maintenance
 
-  - [ ] basic test suite
+  - [ ] document the internal module architecture
 
-  - [ ] api docs
+  - [ ] review the public API before 1.0
 
-- Basic features (first serious release)
+  - [ ] expand malformed-frame and connection-parameter coverage
 
-  - [ ] scroll
-
-  - [ ] Xexport cleanup?
-
-  - [ ] Xexportbin
-
-  - [ ] better type support, most of the following:
-    - [5/8] result set types that just need their name added
-      - [X] tinyint
-      - [X] smallint
-      - [X] int
-      - [X] bigint
-      - [X] varchar
-      - [ ] char
-      - [ ] url
-      - [ ] json
-
-    - [ ] result set types that need their own getters
-      - [ ] boolean (bool)
-      - [ ] oid (u64)
-      - [ ] hugeint
-      - [ ] real
-      - [ ] double
-      - [ ] blob
-      - [ ] inet
-
-    - [ ] result set types that need getter types from external crates
-      - [ ] decimal
-      - [ ] uuid
-
-    - [0/0] all non-temporal resultset types
-
-    - [0/8] all temporal resultset types
-      - [ ] month_interval
-      - [ ] day_interval
-      - [ ] sec_interval
-      - [ ] time
-      - [ ] timetz
-      - [ ] date
-      - [ ] timestamp
-      - [ ] timestamptz
-
-
-
-
-
-
-  - [ ] Check all connection parameters: are they being used?
-
-  - [ ] Unix domain socket scanning
-
-  - [ ] error design: provoke all errors, what does the message look like?
-
-  - [ ] brief code overview, plus doc comments on the more important types and functions
-
-  - [ ] reasonable test coverage (no need to measure)
-
-  - [ ] CI
-
-  - [ ] make fewer things pub
-
-  - [ ] enable / disable logging with a feature
-
-  - [ ] test prehashed passwords
-
-  - [ ] framing tests: invalid headers, incomplete reads and writes
-
-- Advanced features
-
-  - [ ] support std::path::Path in Parameters
-
-  - [ ] PREPARE statement
-
-  - [ ] TLS
-
-  - [ ] store login message somewhere?
-
-- Optimizations
-
-  - [ ] do more parsing while reading, no need to be faster than the server
-
-  - [ ] have newtypes for all Xcommands to avoid duplication
-
-
-
-i8
-u8
-i16
-u16
-i32
-u32
-i64
-u64
-i128
-u128
-isize
-usize
-f32
-f64
+  - [ ] evaluate integration with database frameworks

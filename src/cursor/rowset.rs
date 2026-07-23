@@ -361,7 +361,7 @@ fn test_finish() {
     let buf = rs.finish().unwrap();
     assert_eq!(BStr::new(buf.peek()), BStr::new("&lalala\n"));
 
-    // .finish() works after we've consumed only one rows
+    // .finish() works after we've consumed only one row
     let mut rs = RowSet::new(ReplyBuf::new(testdata.into()), 2);
     assert_eq!(rs.advance(), Ok(true));
     let buf = rs.finish().unwrap();

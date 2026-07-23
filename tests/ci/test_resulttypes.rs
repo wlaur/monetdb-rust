@@ -264,7 +264,7 @@ fn test_time_second() {
     check_temporal(
         "CAST(tsz AS TIME)",
         "EXTRACT(SECOND FROM it)",
-        |t: &RawTime| format!("{:.6}", t.microseconds() as f64 / 1e6),
+        |t: &RawTime| format!("{:.6}", t.microseconds_within_minute() as f64 / 1e6),
     );
 }
 
@@ -318,7 +318,7 @@ fn test_timestamp_second() {
     check_temporal(
         "CAST(tsz AS TIMESTAMP)",
         "EXTRACT(SECOND FROM it)",
-        |ts: &RawTimestamp| format!("{:.6}", ts.time.microseconds() as f64 / 1e6),
+        |ts: &RawTimestamp| format!("{:.6}", ts.time.microseconds_within_minute() as f64 / 1e6),
     );
 }
 
@@ -345,7 +345,7 @@ fn test_timetz_second() {
     check_temporal(
         "CAST(tsz AS TIMETZ)",
         "EXTRACT(SECOND FROM it)",
-        |t: &RawTimeTz| format!("{:.6}", t.time.microseconds() as f64 / 1e6),
+        |t: &RawTimeTz| format!("{:.6}", t.time.microseconds_within_minute() as f64 / 1e6),
     );
 }
 
@@ -387,7 +387,7 @@ fn test_timestamptz_minute() {
 #[test]
 fn test_timestamptz_second() {
     check_temporal("tsz", "EXTRACT(SECOND FROM it)", |tsz: &RawTimestampTz| {
-        format!("{:.6}", tsz.time.microseconds() as f64 / 1e6)
+        format!("{:.6}", tsz.time.microseconds_within_minute() as f64 / 1e6)
     });
 }
 

@@ -12,7 +12,7 @@ Favorites
 In chronological order
 ----------------------
 
-* [getting-started](./202409-001-getting-started.md)
+* [getting-started](./202409-getting-started.md)
 
 * [name-notes](./202409-naming.md)
 

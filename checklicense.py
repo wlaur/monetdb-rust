@@ -122,6 +122,7 @@ if __name__ == "__main__":
             patch = difflib.unified_diff(old_lines, new_lines, fromfile='a/' + file, tofile='b/' + file)
             print(''.join(patch))
         elif args.fix:
-            pass
+            with open(file, 'w') as out:
+                out.writelines(new_lines)
         else:
             raise Exception("huh?")

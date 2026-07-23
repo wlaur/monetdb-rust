@@ -8,7 +8,7 @@
 
 use std::io::{self, ErrorKind, Read};
 
-use super::{BLOCKSIZE, blockstate::BlockState};
+use super::{BLOCKSIZE, FramingError, blockstate::BlockState};
 
 pub struct MapiReader<R> {
     inner: R,
@@ -124,19 +124,13 @@ impl<R: Read> MapiReader<R> {
         if !matches!(reader.state, BlockState::End) {
             let mut extra = [0];
             if reader.read(&mut extra)? != 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "incoming message too long",
-                ));
+                return Err(FramingError::TooLong.into());
             }
         }
         if let BlockState::End = reader.state {
             reader.finish()
         } else {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "incoming message too long",
-            ))
+            Err(FramingError::TooLong.into())
         }
     }
 
@@ -146,19 +140,13 @@ impl<R: Read> MapiReader<R> {
         if !matches!(reader.state, BlockState::End) {
             let mut extra = [0];
             if reader.read(&mut extra)? != 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "incoming message too long",
-                ));
+                return Err(FramingError::TooLong.into());
             }
         }
         if let BlockState::End = reader.state {
             reader.finish()
         } else {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "incoming message too long",
-            ))
+            Err(FramingError::TooLong.into())
         }
     }
 }
