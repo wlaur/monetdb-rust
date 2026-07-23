@@ -562,17 +562,10 @@ impl ReplyParser {
         }
         let ncols = ncols as usize;
         // Each column metadata line needs a `,\t` delimiter for every column
-        // after the first. Normal results have five lines; the documented
-        // EXPLAIN exception has four. Also prevent an untrusted header from
-        // amplifying the received reply into a much larger per-column allocation.
+        // after the first. Normal results have five lines; PLAN results have
+        // four. This bounds the column allocation relative to received metadata.
         let minimum_metadata_bytes = ncols.saturating_sub(1).saturating_mul(10);
-        let column_allocation_bytes = ncols
-            .checked_mul(std::mem::size_of::<ResultColumn>())
-            .ok_or(BadReply::TooManyColumns(ncols as u64))?;
-        let maximum_column_allocation = buf.peek().len().saturating_mul(2);
-        if minimum_metadata_bytes > buf.peek().len()
-            || column_allocation_bytes > maximum_column_allocation
-        {
+        if minimum_metadata_bytes > buf.peek().len() {
             return Err(BadReply::TooManyColumns(ncols as u64));
         }
         let to_close = (!prepared && rows_included < rows_total).then_some(result_id);
@@ -615,7 +608,7 @@ impl ReplyParser {
             Ok(())
         })?;
 
-        // `sql/backends/monet5/sql_gencode.c` handcrafts EXPLAIN results with
+        // `sql/backends/monet5/sql_gencode.c` handcrafts PLAN results with
         // four metadata lines and then '=' rows, omitting `typesizes`.
         if !buf.peek().starts_with(b"=") {
             Self::parse_data_header(&mut buf, "typesizes", &mut columns, &|col, s| {
@@ -862,10 +855,10 @@ mod tests {
     }
 
     #[test]
-    fn accepts_explain_result_without_typesizes() {
+    fn accepts_plan_result_without_typesizes() {
         let response = concat!(
             "&1 0 1 1 1\n",
-            "% .explain # table_name\n",
+            "% .plan # table_name\n",
             "% rel # name\n",
             "% varchar # type\n",
             "% 0 # length\n",
@@ -965,11 +958,29 @@ mod tests {
     }
 
     #[test]
-    fn rejects_column_allocation_larger_than_reply() {
-        let response = format!("&1 17 0 100 0\n{}", " ".repeat(1_000));
-        assert_eq!(
-            ReplyParser::new(response.into_bytes()).unwrap_err(),
-            BadReply::TooManyColumns(100)
-        );
+    fn accepts_wide_results_with_terse_metadata() {
+        for (table_name, ncols) in [("", 100), ("t", 100)] {
+            let repeated = |value: &str| vec![value; ncols].join(",\t");
+            let response = format!(
+                "&1 17 0 {ncols} 0\n% {} # table_name\n% {} # name\n% {} # type\n% {} # length\n% {} # typesizes\n",
+                repeated(table_name),
+                repeated("a"),
+                repeated("int"),
+                repeated("32"),
+                repeated("0 0"),
+            );
+            let ReplyParser::Data(ResultSet { columns, .. }) =
+                ReplyParser::new(response.into_bytes()).unwrap()
+            else {
+                panic!("expected result set");
+            };
+            assert_eq!(columns.len(), ncols);
+            assert!(columns.iter().all(|column| column.name() == "a"));
+            assert!(
+                columns
+                    .iter()
+                    .all(|column| column.table_name() == table_name)
+            );
+        }
     }
 }

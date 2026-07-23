@@ -154,7 +154,11 @@ impl RowSet {
     }
 
     pub fn finish(mut self) -> RResult<ReplyBuf> {
-        if let Some(idx) = self.buf.find_line(b'&') {
+        let boundary = [b'&', b'=']
+            .into_iter()
+            .filter_map(|first| self.buf.find_line(first))
+            .min();
+        if let Some(idx) = boundary {
             self.buf.consume(idx)?;
         } else {
             self.buf.consume(self.buf.peek().len())?;
@@ -366,4 +370,9 @@ fn test_finish() {
     let rs = RowSet::new(ReplyBuf::new(testdata.into()), 2);
     let buf = rs.finish().unwrap();
     assert_eq!(BStr::new(buf.peek()), BStr::new("&lalala\n"));
+
+    let testdata = "[ 1\t]\n[ 2\t]\n=plan row\n";
+    let rs = RowSet::new(ReplyBuf::new(testdata.into()), 1);
+    let buf = rs.finish().unwrap();
+    assert_eq!(BStr::new(buf.peek()), BStr::new("=plan row\n"));
 }
