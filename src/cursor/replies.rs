@@ -528,16 +528,11 @@ impl ReplyParser {
 
     fn parse_autocommit_status(mut buf: ReplyBuf) -> RResult<ReplyParser> {
         let line = buf.split_str(b'\n', "header line")?.trim_ascii();
-        let auto_commit = if line == "&4 f" {
-            false
-        } else if line == "&4 t" {
-            true
-        } else {
+        if !matches!(line, "&4 f" | "&4 t") {
             return Err(BadReply::InvalidHeader(format!(
                 "invalid autocommit header: {line}"
             )));
-        };
-        let _ = auto_commit;
+        }
         Ok(ReplyParser::Tx { buf })
     }
 

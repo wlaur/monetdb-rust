@@ -46,12 +46,8 @@ pub enum CursorError {
     /// The operation was explicitly cancelled from another thread.
     #[error("operation was cancelled; connection closed by cancel")]
     Cancelled,
-    /// Retained for API compatibility; cancellation is currently idempotent
-    /// when no operation is running and does not return this variant.
-    #[error("there is no active operation to cancel")]
-    NoActiveOperation,
-    #[error(transparent)]
     /// Something went wrong in the communication with the server.
+    #[error(transparent)]
     Framing(#[from] FramingError),
     /// The server sent a response that we do not understand.
     #[error(transparent)]
@@ -189,14 +185,14 @@ impl From<io::Error> for CursorError {
 ///
 /// To retrieve data from a result set, first call
 /// [`next_row()`][`Cursor::next_row`]. This tries to move the cursor to the
-/// next row and returns a boolean indicating if a new row was found. if so,
+/// next row and returns a boolean indicating if a new row was found. If so,
 /// methods like [`get_str(colnr)`][`Cursor::get_str`] and
 /// [`get_i32(colnr)`][`Cursor::get_i32`] can be used to retrieve individual
 /// fields from this row.
 /// Note that you **must** call [`next_row()`][`Cursor::next_row`] before you
 /// call a getter. Before the first call to [`next_row()`][`Cursor::next_row`],
 /// the cursor is *before* the first row, not *at* the first row. This behaviour
-/// is convenient because it allows to write things like
+/// is convenient because it allows writing things like
 /// ```no_run
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// # let mut cursor: monetdb::Cursor = todo!();
@@ -218,10 +214,13 @@ pub struct Cursor {
 /// Metadata needed to fetch a result set through `Xexportbin`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BinaryResult {
+    /// Server-side identifier used by `Xexportbin` and `Xclose`.
     pub result_id: u64,
+    /// Total number of rows in the result.
     pub total_rows: u64,
     /// Rows already present in the initial text-protocol response.
     pub rows_included: u64,
+    /// Metadata for each result column, in result order.
     pub columns: Vec<ResultColumn>,
 }
 
@@ -416,10 +415,7 @@ impl Cursor {
     /// Retrieve the number of affected rows from the current reply. INSERT,
     /// UPDATE and SELECT statements provide the number of affected rows, but
     /// for example CREATE TABLE doesn't. Returns a signed value because we're
-    /// not entirely sure whether the server ever sends negative values to indicate
-    /// exceptional conditions.
-    ///
-    /// TODO figure this out and deal with it.
+    /// the wire protocol represents the count as a signed value.
     pub fn affected_rows(&self) -> Option<i64> {
         self.replies.affected_rows()
     }
@@ -659,7 +655,7 @@ impl Cursor {
         let (res_id, start, n, expected_columns) = self.decide_next_fetch()?;
         let cmd = format!("Xexport {res_id} {start} {n}");
 
-        // scratch vector. TODO re-use this
+        // Reuse is not possible across calls because the parsed row set owns the buffer.
         let mut vec = vec![];
 
         // execute the command
@@ -700,6 +696,7 @@ impl Cursor {
         }
     }
 
+    /// Return the current row's value as text, or `None` for SQL NULL.
     pub fn get_str(&self, colnr: usize) -> CursorResult<Option<&str>> {
         let Some(field) = self.row_set()?.get_field_raw(colnr)? else {
             return Ok(None);
@@ -708,6 +705,7 @@ impl Cursor {
         Ok(Some(s))
     }
 
+    /// Convert the current row's value using its [`FromMonet`] implementation.
     pub fn get<T: FromMonet>(&self, colnr: usize) -> CursorResult<Option<T>> {
         T::extract(self.result_set()?, colnr)
     }

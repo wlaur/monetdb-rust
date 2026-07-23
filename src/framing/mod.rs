@@ -34,8 +34,11 @@ const MAX_TIMEOUT: Duration = Duration::from_secs(MAX_TIMEOUT_SECONDS as u64);
 /// Idle socket timeouts and the absolute timeout for one post-login operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Timeouts {
+    /// Maximum idle duration for one socket read.
     pub read: Option<Duration>,
+    /// Maximum idle duration for one socket write.
     pub write: Option<Duration>,
+    /// Absolute deadline for one post-login operation.
     pub operation: Option<Duration>,
 }
 
@@ -214,7 +217,6 @@ pub enum FramingError {
     InvalidBlockSize,
     InvalidHeaderLength(usize),
     MessageAlreadyComplete,
-    Unicode,
     TooLong,
 }
 
@@ -226,9 +228,6 @@ impl FramingError {
             }
             FramingError::InvalidHeaderLength(_) => "network layer: invalid block header length",
             FramingError::MessageAlreadyComplete => "network layer: message is already complete",
-            FramingError::Unicode => {
-                "network layer: invalid utf-8 encoding, block was expected to contain text"
-            }
             FramingError::TooLong => "network layer: message too long",
         }
     }

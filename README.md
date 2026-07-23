@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 // host=Some("totoro") clientpid=Some(1914127) client=Some("monetdb-rust 0.1.1") remark=None
 ```
 
-You can also use a `Parameters` object to fine tune the connection parameters:
+You can also use a `Parameters` object to fine-tune the connection parameters:
 
 ```rust
 # use std::error::Error;
@@ -49,11 +49,16 @@ let conn = Connection::new(parms)?;
 # }
 ```
 
+When the server advertises client information, connections report the host,
+process, application, and `monetdb-rust` library version by default. Use
+`client_application`, `client_remark`, and `client_prefix` connection
+parameters to customize those values, or `client_info=false` to disable them.
+
 Current status
 --------------
 
-* MonetDB Dec2025 (11.55.0) and later are supported. Protocol compatibility
-  with older releases is not maintained.
+* The client is tested against current MonetDB and selected older releases.
+  Compatibility outside the tested matrix is not guaranteed.
 
 * Rust 2024 edition; current stable Rust is the supported toolchain.
 
@@ -87,7 +92,7 @@ Not implemented yet but planned:
 
 * Adaptive paging window sizes
 
-* scanning /tmp for Unix Domain sockets
+* Scanning /tmp for Unix Domain sockets
 
 * Non-SQL, for example language=mal for MonetDB's tracing / profiling API
 
@@ -121,6 +126,9 @@ The `monetdb` crate defines these optional features:
 
 * **uuid** Enable UUID conversion (enabled by default).
 
+* **time** Enable local-time-zone discovery for connections whose `timezone`
+  parameter is not set.
+
 * **rust_decimal** and **decimal-rs** enable conversions to the corresponding
   decimal crates.
 
@@ -130,6 +138,6 @@ Testing
 `cargo test` runs the serverless unit and documentation suites. The internal
 `ci-tests` feature enables the live integration target, so
 `cargo test --all-features` requires `CI_SERVER_URL` to name a running MonetDB
-Dec2025 (11.55.0+) server. Run `cargo test --all-features --lib` and
+server. Run `cargo test --all-features --lib` and
 `cargo test --all-features --doc` when checking every library feature without
 a server.

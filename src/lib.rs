@@ -19,12 +19,13 @@ pub mod monettypes;
 pub mod parms;
 mod util;
 
-pub use conn::{CancelHandle, Connection, ServerInfo};
+pub use conn::{CancelHandle, Connection, ServerInfo, ServerMetadata};
 pub use cursor::{
-    BinaryResult, Cursor, CursorError, CursorResult, ServerError, replies::ResultColumn,
+    BinaryResult, Cursor, CursorError, CursorResult, ServerError,
+    replies::{BadReply, ResultColumn},
 };
 pub use framing::connecting::{ConnectError, ConnectResult, Endian};
-pub use framing::{MAX_TIMEOUT_SECONDS, Timeouts};
+pub use framing::{FramingError, MAX_TIMEOUT_SECONDS, Timeouts};
 pub use monettypes::MonetType;
 pub use parms::Parameters;
 

@@ -9,7 +9,7 @@
 use crate::{AResult, get_server};
 use claims::assert_some;
 use monetdb::{Connection, CursorResult, Parameters, parms::Parm};
-use std::{io, net::TcpListener};
+use std::{io, net::TcpListener, process};
 
 #[test]
 fn test_connect() -> AResult<()> {
@@ -42,6 +42,52 @@ fn test_configured_schema() -> AResult<()> {
     cursor.execute("SELECT current_schema")?;
     assert!(cursor.next_row()?);
     assert_eq!(cursor.get_str(0)?, Some("sys"));
+    Ok(())
+}
+
+#[test]
+fn test_client_info() -> AResult<()> {
+    let ctx = get_server();
+    let mut parms: Parameters = ctx.parms();
+    let probe = Connection::new(parms.clone())?;
+    if probe.metadata()?.version() < (11, 51, 0) {
+        return Ok(());
+    }
+    probe.close();
+
+    parms.set_client_prefix("integration-client 1.0")?;
+    parms.set_client_application("monetdb-rust-tests")?;
+    parms.set_client_remark("client-info-integration")?;
+    let conn = Connection::new(parms.clone())?;
+    let mut cursor = conn.cursor();
+    let hostname = gethostname::gethostname().to_string_lossy().into_owned();
+    cursor.execute(
+        "SELECT hostname, application, client, clientpid, remark \
+         FROM sys.sessions WHERE sessionid = current_sessionid()",
+    )?;
+    assert!(cursor.next_row()?);
+    assert_eq!(cursor.get_str(0)?, Some(hostname.as_str()));
+    assert_eq!(cursor.get_str(1)?, Some("monetdb-rust-tests"));
+    assert!(
+        cursor
+            .get_str(2)?
+            .is_some_and(|value| value.starts_with("integration-client 1.0 / monetdb-rust "))
+    );
+    assert_eq!(cursor.get_u32(3)?, Some(process::id()));
+    assert_eq!(cursor.get_str(4)?, Some("client-info-integration"));
+    conn.close();
+
+    parms.set_client_info("false")?;
+    let conn = Connection::new(parms)?;
+    let mut cursor = conn.cursor();
+    cursor.execute(
+        "SELECT hostname, application, client, clientpid, remark \
+         FROM sys.sessions WHERE sessionid = current_sessionid()",
+    )?;
+    assert!(cursor.next_row()?);
+    for column in 0..5 {
+        assert_eq!(cursor.get_str(column)?, None);
+    }
     Ok(())
 }
 

@@ -32,7 +32,7 @@ steps below. The command to run individual steps is noted in the stepTo execute
 individual steps, write `cargo release version <version>`, `cargo release
 replace`, etc. You can also perform these actions by hand if that feels safer.
 
-1. `cargo release version <major|minor|patch|version>`. Bumps the version number in
+1. `cargo release version <major|minor|patch|exact-version>`. Bumps the version number in
    Cargo.toml.
 
 2. `cargo release replace`. Adds a section for this version to [CHANGELOG.md], containing

@@ -67,11 +67,11 @@ pub enum MonetType {
     /// Gregorian calendar date YYYY-MM-DD
     Date,
     /// Timestamp YYYY-MM-DD HH:MM:SS.sss with varying number of decimals,
-    /// expressed in the connections current timezone.
+    /// independent of time zone.
     /// (Nr of decimals currently unimplemented.)
     Timestamp,
     /// Timestamp YYYY-MM-DD HH:MM:SS.sss with varying number of decimals,
-    /// independent of time zone.
+    /// expressed in the connection's current timezone.
     /// (Nr of decimals currently unimplemented.)
     TimestampTz,
     Blob,

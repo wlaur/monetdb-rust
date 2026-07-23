@@ -2,6 +2,9 @@
 
 ## monetdb NEXTVERSION - YYYY-MM-DD
 
+
+## monetdb 0.2.1 - 2026-07-23
+
 New features:
 
 - Add binary result-set metadata and window retrieval through `Xexportbin`,
@@ -23,6 +26,8 @@ New features:
   mutual-TLS authentication modes.
 
 - Add connect_timeout setting.
+
+- Add a client-library prefix setting for branded `Xclientinfo` session metadata.
 
 Bug fixes:
 

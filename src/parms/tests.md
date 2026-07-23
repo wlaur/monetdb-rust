@@ -31,7 +31,7 @@ keywords:
 
 At the start of each block the parameters are reset to their default values.
 
-The EXPECT clause can verify all parameters listen in the Parameters section of
+The EXPECT clause can verify all parameters listed in the Parameters section of
 the spec, all 'virtual parameters' and also the special case `valid` which is a
 boolean indicating whether all validity rules in section 'Interpreting the
 parameters' hold.
@@ -1469,4 +1469,25 @@ EXPECT operation_timeout=4
 ACCEPT monetdb://localhost/demo?operation_timeout=0
 EXPECT operation_timeout=0
 REJECT monetdb://localhost/demo?read_timeout=-1
+```
+
+### Client information
+
+```test
+EXPECT client_info=true
+EXPECT client_application=
+EXPECT client_prefix=
+EXPECT client_remark=
+ACCEPT monetdb://localhost/demo?client_application=myjob&client_prefix=myclient&client_remark=testing
+EXPECT client_application=myjob
+EXPECT client_prefix=myclient
+EXPECT client_remark=testing
+```
+
+Client information values cannot contain newlines while client information is enabled.
+
+```test
+REJECT monetdb://localhost/demo?client_application=bad%0Avalue
+REJECT monetdb://localhost/demo?client_prefix=bad%0Avalue
+REJECT monetdb://localhost/demo?client_remark=bad%0Avalue
 ```

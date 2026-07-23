@@ -145,7 +145,9 @@ where
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum Endian {
+    /// Most-significant byte first.
     Big,
+    /// Least-significant byte first.
     Lit,
 }
 
@@ -552,6 +554,9 @@ fn challenge_response(
         let mut info = ClientInfo::default();
         if !parms.client_application.is_empty() {
             info.application_name = Cow::Owned(parms.client_application.to_string());
+        }
+        if !parms.client_prefix.is_empty() {
+            info.client_library = Cow::Owned(format!("{} / {PUBLIC_NAME}", parms.client_prefix));
         }
         if !parms.client_remark.is_empty() {
             info.client_remark = Cow::Owned(parms.client_remark.to_string());
@@ -1026,5 +1031,64 @@ mod tests {
                 .windows(b"sSET SCHEMA \"a\"\"b\";\n".len())
                 .any(|window| window == b"sSET SCHEMA \"a\"\"b\";\n")
         );
+    }
+
+    fn client_info_challenge(enabled: bool) -> Challenge<'static> {
+        Challenge {
+            salt: "salt",
+            server_type: "mserver",
+            response_algos: "SHA512",
+            endian: Endian::Lit,
+            prehash_algo: "SHA512",
+            sql_handshake_option_level: 9,
+            binary: 1,
+            clientinfo: enabled,
+        }
+    }
+
+    fn first_delayed_message(delayed: &DelayedCommands) -> &str {
+        let raw = delayed.buffer.peek();
+        let header = u16::from_le_bytes(raw[..2].try_into().unwrap());
+        assert_eq!(header & 1, 1);
+        let length = usize::from(header >> 1);
+        str::from_utf8(&raw[2..2 + length]).unwrap()
+    }
+
+    #[test]
+    fn client_info_uses_configured_library_prefix() {
+        let mut parameters = Parameters::default();
+        parameters
+            .set_client_prefix("example-client 1.2.3")
+            .unwrap();
+        let validated = parameters.validate().unwrap();
+        let mut response = String::new();
+
+        let (_, delayed) =
+            challenge_response(&validated, &client_info_challenge(true), &mut response).unwrap();
+        let message = first_delayed_message(&delayed);
+
+        assert!(message.starts_with("Xclientinfo "));
+        assert!(message.contains(&format!(
+            "ClientLibrary=example-client 1.2.3 / {PUBLIC_NAME}\n"
+        )));
+        assert!(message.contains("ClientPid="));
+        assert!(message.contains("ClientHostname="));
+        assert!(!message.contains("ClientRemark="));
+        assert!(message.lines().all(|line| !line.is_empty()));
+        assert!(message.ends_with('\n'));
+    }
+
+    #[test]
+    fn client_info_is_not_sent_when_server_does_not_advertise_it() {
+        let mut parameters = Parameters::default();
+        parameters.set_client_prefix("example-client").unwrap();
+        let validated = parameters.validate().unwrap();
+        let mut response = String::new();
+
+        let (_, delayed) =
+            challenge_response(&validated, &client_info_challenge(false), &mut response).unwrap();
+
+        assert_eq!(delayed.buffer.peek(), [0xff, 0xff]);
+        assert!(delayed.responses.is_empty());
     }
 }
