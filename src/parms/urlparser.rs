@@ -338,3 +338,22 @@ fn generated_urls_preserve_ipv6_hosts() {
     let parsed = Parameters::from_url(&url).unwrap();
     assert_eq!(parsed.get_str(Parm::Host).unwrap(), "2001:db8::1");
 }
+
+#[cfg(test)]
+mod property_tests {
+    use proptest::prelude::*;
+
+    use crate::Parameters;
+
+    proptest! {
+        #[test]
+        fn arbitrary_urls_return_bounded_results(input in any::<String>()) {
+            if let Ok(parameters) = Parameters::from_url(&input) {
+                let _ = parameters.validate();
+                if let Ok(url) = parameters.url_without_credentials() {
+                    prop_assert!(Parameters::from_url(&url).is_ok());
+                }
+            }
+        }
+    }
+}

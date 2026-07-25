@@ -377,3 +377,31 @@ fn test_finish() {
     let buf = rs.finish().unwrap();
     assert_eq!(BStr::new(buf.peek()), BStr::new("=plan row\n"));
 }
+
+#[cfg(test)]
+mod property_tests {
+    use proptest::prelude::*;
+
+    use super::{ReplyBuf, RowSet};
+
+    proptest! {
+        #[test]
+        fn arbitrary_rowset_bytes_return_bounded_results(
+            input in prop::collection::vec(any::<u8>(), 0..4096),
+            columns in 0usize..32,
+        ) {
+            let mut rows = RowSet::new(ReplyBuf::new(input), columns);
+            for _ in 0..64 {
+                match rows.advance() {
+                    Ok(true) => {
+                        for column in 0..columns.saturating_add(2) {
+                            let _ = rows.get_field_raw(column);
+                        }
+                    }
+                    Ok(false) | Err(_) => break,
+                }
+            }
+            let _ = rows.finish();
+        }
+    }
+}

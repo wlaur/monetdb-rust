@@ -567,3 +567,28 @@ fn expect_end<T: 'static>(data: &[u8]) -> CursorResult<()> {
         )))
     }
 }
+
+#[cfg(test)]
+mod property_tests {
+    use proptest::prelude::*;
+
+    use super::{RawDate, RawTime, RawTimeTz, RawTimestamp, RawTimestampTz, RawTz};
+
+    proptest! {
+        #[test]
+        fn arbitrary_temporal_bytes_return_bounded_results(input in prop::collection::vec(any::<u8>(), 0..512)) {
+            let mut field = input.as_slice();
+            let _ = RawDate::parse(&mut field);
+            let mut field = input.as_slice();
+            let _ = RawTime::parse(&mut field);
+            let mut field = input.as_slice();
+            let _ = RawTimestamp::parse(&mut field);
+            let mut field = input.as_slice();
+            let _ = RawTz::parse(&mut field);
+            let mut field = input.as_slice();
+            let _ = RawTimeTz::parse(&mut field);
+            let mut field = input.as_slice();
+            let _ = RawTimestampTz::parse(&mut field);
+        }
+    }
+}
