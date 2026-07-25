@@ -143,6 +143,8 @@ impl BlockState {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use crate::util::referencedata::ReferenceData;
 
     use super::*;
@@ -213,5 +215,27 @@ mod tests {
         assert_eq!(step(bs, &mut data), b"");
         data = &orig.as_slice()[n..];
         assert_eq!(step(bs, &mut data), b"joeri");
+    }
+
+    proptest! {
+        #[test]
+        fn arbitrary_block_state_inputs_return_bounded_ranges(
+            selector in any::<u8>(),
+            remaining in 0usize..=BLOCKSIZE,
+            last in any::<bool>(),
+            partial in any::<u8>(),
+            input in prop::collection::vec(any::<u8>(), 0..4096),
+        ) {
+            let state = match selector % 4 {
+                0 => Start,
+                1 => PartialHeader(partial),
+                2 => BlockState::new(remaining, last),
+                _ => End,
+            };
+            if let Ok((range, _)) = state.skip_headers(&input) {
+                prop_assert!(range.start <= range.end);
+                prop_assert!(range.end <= input.len());
+            }
+        }
     }
 }

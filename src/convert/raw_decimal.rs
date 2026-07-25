@@ -318,3 +318,22 @@ fn test_eq() {
     assert_eq!(RawDecimal(100, 1), RawDecimal(100, 1));
     assert_eq!(RawDecimal(10, 0), RawDecimal(100, 1));
 }
+
+#[cfg(test)]
+mod property_tests {
+    use proptest::prelude::*;
+
+    use super::RawDecimal;
+
+    proptest! {
+        #[test]
+        fn arbitrary_decimal_bytes_return_a_bounded_result(input in prop::collection::vec(any::<u8>(), 0..512)) {
+            let _ = RawDecimal::<i8>::parse_signed(&input);
+            let _ = RawDecimal::<u8>::parse_unsigned(&input);
+            let _ = RawDecimal::<i64>::parse_signed(&input);
+            let _ = RawDecimal::<u64>::parse_unsigned(&input);
+            let _ = RawDecimal::<i128>::parse_signed(&input);
+            let _ = RawDecimal::<u128>::parse_unsigned(&input);
+        }
+    }
+}

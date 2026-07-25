@@ -754,7 +754,22 @@ pub fn from_utf8<'a>(context: &'static str, bytes: &'a [u8]) -> RResult<&'a str>
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::{BadReply, ReplyParser, ResultSet, response_autocommit, server_error};
+
+    proptest! {
+        #[test]
+        fn arbitrary_reply_bytes_return_a_bounded_result(response in prop::collection::vec(any::<u8>(), 0..4096)) {
+            if let Ok(parser) = ReplyParser::new(response) {
+                let _ = parser.affected_rows();
+                let _ = parser.at_result_set();
+                if !matches!(&parser, ReplyParser::Exhausted(_)) {
+                    let _ = parser.into_next_reply();
+                }
+            }
+        }
+    }
 
     #[test]
     fn extracts_last_autocommit_status() {
