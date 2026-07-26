@@ -144,14 +144,14 @@ enum RawSocket {
 
 #[derive(Debug)]
 pub(crate) struct SocketControl {
-    raw: RawSocket,
+    raw: Mutex<Option<RawSocket>>,
     timeouts: Mutex<ActiveTimeouts>,
 }
 
 impl SocketControl {
     fn new(raw: RawSocket, active: ActiveTimeouts) -> Self {
         Self {
-            raw,
+            raw: Mutex::new(Some(raw)),
             timeouts: Mutex::new(active),
         }
     }
@@ -202,12 +202,18 @@ impl SocketControl {
     }
 
     pub(crate) fn shutdown(&self) -> io::Result<()> {
-        match &self.raw {
-            RawSocket::Tcp(socket) => socket.shutdown(Shutdown::Both),
+        let raw = self
+            .raw
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        match raw {
+            None => Ok(()),
+            Some(RawSocket::Tcp(socket)) => socket.shutdown(Shutdown::Both),
             #[cfg(unix)]
-            RawSocket::Unix(socket) => socket.shutdown(Shutdown::Both),
+            Some(RawSocket::Unix(socket)) => socket.shutdown(Shutdown::Both),
             #[cfg(test)]
-            RawSocket::Test => Ok(()),
+            Some(RawSocket::Test) => Ok(()),
         }
     }
 }
