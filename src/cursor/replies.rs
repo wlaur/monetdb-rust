@@ -58,6 +58,9 @@ pub enum BadReply {
 pub type RResult<T> = Result<T, BadReply>;
 
 pub(crate) fn response_autocommit(response: &[u8]) -> Option<bool> {
+    if !response.starts_with(b"&4 ") && memmem::find(response, b"\n&4 ").is_none() {
+        return None;
+    }
     response
         .split(|byte| *byte == b'\n')
         .filter_map(|line| {
@@ -73,6 +76,9 @@ pub(crate) fn response_autocommit(response: &[u8]) -> Option<bool> {
 }
 
 pub(crate) fn server_error(response: &[u8]) -> Option<ServerError> {
+    if !response.starts_with(b"!") && memmem::find(response, b"\n!").is_none() {
+        return None;
+    }
     let mut messages = response
         .split(|byte| *byte == b'\n')
         .filter_map(|line| line.strip_prefix(b"!"));

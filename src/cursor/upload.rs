@@ -91,6 +91,7 @@ impl Cursor {
             },
         )?;
         if let Some(error) = delayed_error {
+            self.discard_sql_response(response);
             return Err(CursorError::Server(error));
         }
         if let Some(error) = refused {
@@ -127,15 +128,15 @@ impl Cursor {
 }
 
 fn take_file_request(response: &mut Vec<u8>) -> CursorResult<Option<String>> {
-    let Some(marker) = response
-        .windows(FILE_TRANSFER.len())
-        .enumerate()
-        .rfind(|(index, window)| {
-            *window == FILE_TRANSFER && (*index == 0 || response[*index - 1] == b'\n')
-        })
-        .map(|(index, _)| index)
-    else {
-        return Ok(None);
+    let mut end = response.len();
+    let marker = loop {
+        let Some(marker) = memchr::memmem::rfind(&response[..end], FILE_TRANSFER) else {
+            return Ok(None);
+        };
+        if marker == 0 || response[marker - 1] == b'\n' {
+            break marker;
+        }
+        end = marker;
     };
     let command = &response[marker + FILE_TRANSFER.len()..];
     let Some(command) = command.strip_suffix(b"\n") else {

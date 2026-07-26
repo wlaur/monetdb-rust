@@ -961,12 +961,16 @@ impl Parameters {
 
     /// Set the absolute connection-establishment timeout in seconds.
     /// Zero explicitly disables the timeout; negative values fail validation.
+    /// A timed-out blocking DNS or Unix-socket call can leave one background
+    /// worker alive until the operating-system call returns.
     pub fn set_connect_timeout(&mut self, value: impl Into<i64>) -> ParmResult<()> {
         self.set(Parm::ConnectTimeout, value.into())
     }
 
     /// Set the absolute connection-establishment timeout in seconds.
     /// Zero explicitly disables the timeout; negative values fail validation.
+    /// A timed-out blocking DNS or Unix-socket call can leave one background
+    /// worker alive until the operating-system call returns.
     pub fn with_connect_timeout(mut self, value: impl Into<i64>) -> ParmResult<Parameters> {
         self.set_connect_timeout(value)?;
         Ok(self)
