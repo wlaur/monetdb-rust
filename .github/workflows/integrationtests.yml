@@ -37,6 +37,8 @@ jobs:
         image: "monetdb/dev-builds:${{ matrix.monetdbversion }}"
         env:
           MDB_DB_ADMIN_PASS: monetdb
+        options: >-
+          --tmpfs /var/monetdb5/dbfarm:rw,size=2147483648,mode=0777
         ports:
         - 50000:50000
     steps:
