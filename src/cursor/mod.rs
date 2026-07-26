@@ -208,6 +208,7 @@ pub struct Cursor {
     conn: Arc<Conn>,
     replies: ReplyParser,
     reply_size: usize,
+    max_prefetch: Option<usize>,
     timeouts: Timeouts,
 }
 
@@ -236,6 +237,7 @@ impl Cursor {
         Cursor {
             replies: ReplyParser::default(),
             reply_size: conn.reply_size,
+            max_prefetch: conn.max_prefetch,
             timeouts: conn.timeouts,
             conn,
         }
@@ -275,19 +277,7 @@ impl Cursor {
                 )))
             },
         )?;
-
-        let error = ReplyParser::detect_errors(&vec);
-
-        // Always create and install a replyparser, even if an error occurred.
-        // We need to make sure all result sets are being released etc.
-        self.replies = ReplyParser::new(vec)?;
-
-        if let Err(err) = error {
-            let _ = self.exhaust();
-            return Err(err);
-        }
-
-        Ok(())
+        self.install_response(vec)
     }
 
     /// Execute SQL while serving named in-memory files requested through
@@ -325,13 +315,7 @@ impl Cursor {
                 })
         })?;
 
-        let error = ReplyParser::detect_errors(&vec);
-        self.replies = ReplyParser::new(vec)?;
-        if let Err(error) = error {
-            let _ = self.exhaust();
-            return Err(error);
-        }
-        Ok(())
+        self.install_response(vec)
     }
 
     /// Execute SQL while producing each named binary upload only when MonetDB
@@ -370,8 +354,12 @@ impl Cursor {
             upload(filename).map(Cow::Owned)
         })?;
 
-        let error = ReplyParser::detect_errors(&vec);
-        self.replies = ReplyParser::new(vec)?;
+        self.install_response(vec)
+    }
+
+    fn install_response(&mut self, response: Vec<u8>) -> CursorResult<()> {
+        let error = ReplyParser::detect_errors(&response);
+        self.replies = ReplyParser::new(response)?;
         if let Err(error) = error {
             let _ = self.exhaust();
             return Err(error);
@@ -393,6 +381,7 @@ impl Cursor {
         vec: &mut Vec<u8>,
         update_autocommit: bool,
     ) -> Result<(), CursorError> {
+        let mut delayed_error = None;
         self.conn.run_locked_with_timeouts(
             self.timeouts,
             |state: &mut ServerState,
@@ -400,16 +389,22 @@ impl Cursor {
              mut sock: ServerSock|
              -> CursorResult<ServerSock> {
                 sock = delayed.send_delayed_plus(sock, command)?;
-                sock = delayed.recv_delayed(sock, vec, self.conn.max_response_size)?;
+                (sock, delayed_error) =
+                    delayed.recv_delayed(sock, vec, self.conn.max_response_size)?;
                 vec.clear();
                 sock = MapiReader::to_limited(sock, vec, self.conn.max_response_size)?;
-                if update_autocommit && let Some(autocommit) = response_autocommit(vec) {
-                    state.autocommit = autocommit;
+                if update_autocommit {
+                    if let Some(autocommit) = response_autocommit(vec) {
+                        state.autocommit = autocommit;
+                    }
                 }
                 Ok(sock)
             },
         )?;
-        Ok(())
+        match delayed_error {
+            Some(error) => Err(CursorError::Server(error)),
+            None => Ok(()),
+        }
     }
 
     /// Retrieve the number of affected rows from the current reply. INSERT,
@@ -465,14 +460,20 @@ impl Cursor {
     fn do_close(&mut self) -> CursorResult<()> {
         self.exhaust()?;
         let mut vec = self.replies.take_buffer();
+        let mut delayed_error = None;
         self.conn
             .run_locked_with_timeouts(self.timeouts, |_state, delayed, mut sock| {
                 if !delayed.responses.is_empty() {
                     sock = delayed.send_delayed(sock)?;
-                    sock = delayed.recv_delayed(sock, &mut vec, self.conn.max_response_size)?;
+                    (sock, delayed_error) =
+                        delayed.recv_delayed(sock, &mut vec, self.conn.max_response_size)?;
                 }
                 Ok(sock)
-            })
+            })?;
+        match delayed_error {
+            Some(error) => Err(CursorError::Server(error)),
+            None => Ok(()),
+        }
     }
 
     /// Return information about the columns of the current result set.
@@ -647,7 +648,7 @@ impl Cursor {
         let remaining = total_rows
             .checked_sub(*next_row)
             .ok_or(BadReply::TooManyRows { total: *total_rows })?;
-        let n = remaining.min(self.reply_size as u64) as usize;
+        let n = next_fetch_size(self.reply_size, self.max_prefetch, remaining);
         Ok((*result_id, *next_row, n, columns.len()))
     }
 
@@ -683,6 +684,7 @@ impl Cursor {
             // new_row_set is actually the old row set now
             *stashed_primary_row_set = Some(new_row_set);
         }
+        self.reply_size = n;
 
         // Now the new rows are in place!
         Ok(())
@@ -717,6 +719,15 @@ fn count_row(next_row: &mut u64, total_rows: u64) -> Result<(), BadReply> {
     }
     *next_row += 1;
     Ok(())
+}
+
+fn next_fetch_size(previous: usize, max_prefetch: Option<usize>, remaining: u64) -> usize {
+    let desired = previous.saturating_mul(2);
+    let desired = match max_prefetch {
+        Some(limit) => desired.min(limit.saturating_add(1)),
+        None => desired,
+    };
+    remaining.min(desired as u64) as usize
 }
 
 fn validate_fetch_progress(row_set: &RowSet, start: u64, requested: usize) -> Result<(), BadReply> {
@@ -869,5 +880,14 @@ mod tests {
                 requested: 3
             })
         );
+    }
+
+    #[test]
+    fn text_export_windows_grow_and_respect_prefetch_limits() {
+        assert_eq!(next_fetch_size(200, Some(2500), 10_000), 400);
+        assert_eq!(next_fetch_size(1600, Some(2500), 10_000), 2501);
+        assert_eq!(next_fetch_size(200, Some(0), 10_000), 1);
+        assert_eq!(next_fetch_size(200, None, 10_000), 400);
+        assert_eq!(next_fetch_size(200, None, 250), 250);
     }
 }

@@ -339,10 +339,10 @@ pub fn establish_connection(
         let sock = match restarted_socket.take() {
             Some(sock) => sock,
             None => {
-                if log_enabled!(log::Level::Debug)
-                    && let Ok(url) = parms.url_without_credentials()
-                {
-                    debug!("connecting to {url}");
+                if log_enabled!(log::Level::Debug) {
+                    if let Ok(url) = parms.url_without_credentials() {
+                        debug!("connecting to {url}");
+                    }
                 }
                 connect_socket(&validated, deadline)?
             }

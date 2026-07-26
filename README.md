@@ -60,7 +60,8 @@ Current status
 * The client is tested against current MonetDB and selected older releases.
   Compatibility outside the tested matrix is not guaranteed.
 
-* Rust 2024 edition; current stable Rust is the supported toolchain.
+* Rust 2024 edition; Rust 1.85 is the minimum supported version, and CI also
+  tests current stable, beta, and nightly.
 
 * The full `monetdb://` connection URL syntax is supported, though not all features have been implemented.
 
@@ -89,8 +90,6 @@ Not implemented yet but planned:
 
 * A high-level parameter-binding API. PREPARE metadata and statement ids are
   already exposed for clients that implement binding.
-
-* Adaptive paging window sizes
 
 * Scanning /tmp for Unix Domain sockets
 
@@ -131,6 +130,16 @@ The `monetdb` crate defines these optional features:
 
 * **rust_decimal** and **decimal-rs** enable conversions to the corresponding
   decimal crates.
+
+Result windows
+--------------
+
+The first `replysize` rows are included in the query response. Subsequent
+text-protocol windows double in size until they reach the `maxprefetch` limit,
+which defaults to 2,500 rows beyond the row currently requested. Set
+`maxprefetch=0` to disable read-ahead or `maxprefetch=-1` to allow unbounded
+window growth. Binary clients can use `BinaryResult` and
+`Cursor::fetch_binary_into()` to choose their own window sizes directly.
 
 Testing
 -------

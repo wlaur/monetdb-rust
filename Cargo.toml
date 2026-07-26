@@ -1,6 +1,6 @@
 [package]
 name = "monetdb"
-version = "0.2.1"
+version = "0.2.2-wlaur.1"
 description = "Client library for MonetDB, a high performance SQL database for analytics"
 authors = [ "Joeri van Ruth <joeri.van.ruth@monetdbsolutions.com>" ]
 keywords = [ "monetdb", "database", "sql" ]

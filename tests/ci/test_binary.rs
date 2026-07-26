@@ -66,6 +66,24 @@ fn test_binary_result_window_and_server_info() -> Result<()> {
 }
 
 #[test]
+fn test_quoted_result_identifiers() -> Result<()> {
+    let connection = get_server().connect()?;
+    let mut cursor = connection.cursor();
+    cursor.execute(r#"DROP TABLE IF EXISTS "source,table""#)?;
+    cursor.execute(r#"CREATE TABLE "source,table" ("value""column" INT)"#)?;
+    cursor.execute(r#"SELECT "value""column" FROM "source,table""#)?;
+    let column = &cursor.column_metadata()[0];
+    assert!(column.table_name().ends_with(".source,table"));
+    assert!(!column.table_name().contains(['"', '\\']));
+    assert_eq!(column.name(), "value\"column");
+
+    cursor.execute(r#"SELECT "value""column" AS "alias""column" FROM "source,table""#)?;
+    assert_eq!(cursor.column_metadata()[0].name(), "alias\"column");
+    cursor.execute(r#"DROP TABLE "source,table""#)?;
+    Ok(())
+}
+
+#[test]
 fn test_binary_payload_cannot_change_cached_autocommit() -> Result<()> {
     let mut parameters = get_server().parms();
     parameters.set_replysize(1)?;

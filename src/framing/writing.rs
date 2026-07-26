@@ -88,6 +88,10 @@ impl MapiBuf {
 
     pub fn reset(&mut self) -> &[u8] {
         self.prepare_reset();
+        debug_assert_eq!(
+            self.block_left, BLOCKSIZE,
+            "MapiBuf::reset requires a completed message"
+        );
         let mut raw_len = self.buffer.len();
         if self.block_left == BLOCKSIZE {
             raw_len -= 2;

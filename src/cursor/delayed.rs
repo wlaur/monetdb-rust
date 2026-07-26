@@ -11,7 +11,7 @@ use std::{borrow::Cow, io::Write};
 
 use crate::framing::{ServerSock, reading::MapiReader, writing::MapiBuf};
 
-use super::CursorResult;
+use super::{CursorResult, ServerError};
 
 pub struct ExpectedResponse {
     pub description: Cow<'static, str>,
@@ -86,7 +86,7 @@ impl DelayedCommands {
         conn: ServerSock,
         buffer: &mut Vec<u8>,
         max_response_size: usize,
-    ) -> CursorResult<ServerSock> {
+    ) -> CursorResult<(ServerSock, Option<ServerError>)> {
         let res = self.recv_delayed_inner(conn, buffer, max_response_size);
         buffer.clear();
         res
@@ -97,7 +97,8 @@ impl DelayedCommands {
         mut conn: ServerSock,
         buffer: &mut Vec<u8>,
         max_response_size: usize,
-    ) -> CursorResult<ServerSock> {
+    ) -> CursorResult<(ServerSock, Option<ServerError>)> {
+        let mut first_error = None;
         for resp in self.responses.drain(..) {
             buffer.clear();
             conn = MapiReader::to_limited(conn, buffer, max_response_size)?;
@@ -107,12 +108,12 @@ impl DelayedCommands {
                     log::warn!("delayed {description}: {error}");
                     continue;
                 }
-                let context = format!("delayed {description}");
-                return Err(super::CursorError::Server(
-                    super::ServerError::with_context(&context, error),
-                ));
+                if first_error.is_none() {
+                    let context = format!("delayed {description}");
+                    first_error = Some(ServerError::with_context(&context, error));
+                }
             }
         }
-        Ok(conn)
+        Ok((conn, first_error))
     }
 }

@@ -3,6 +3,30 @@
 ## monetdb NEXTVERSION - YYYY-MM-DD
 
 
+## monetdb 0.2.2-wlaur.1 - 2026-07-26
+
+New features:
+
+- Grow text result windows adaptively and honor the `maxprefetch` connection
+  parameter.
+
+- Re-export `ResultSet` and expose its current raw value so downstream crates
+  can implement `FromMonet`.
+
+Bug fixes:
+
+- Keep synchronized sessions usable when a delayed non-cleanup command returns
+  a server error.
+
+- Restore compatibility with the declared Rust 1.85 minimum by avoiding syntax
+  stabilized in later compilers.
+
+Other:
+
+- Pin GitHub Actions, test the minimum Rust version and a big-endian target,
+  enable the logger tests, and add live quoted-identifier coverage.
+
+
 ## monetdb 0.2.1 - 2026-07-23
 
 New features:
