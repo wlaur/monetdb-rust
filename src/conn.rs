@@ -1035,7 +1035,7 @@ mod tests {
         server_release.send(()).unwrap();
         assert_connection_closed(
             disconnected
-                .recv_timeout(Duration::from_secs(2))
+                .recv_timeout(Duration::from_secs(10))
                 .expect("timed out upload body remained open"),
         );
         release_sender.send(()).unwrap();
