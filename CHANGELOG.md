@@ -18,6 +18,9 @@ Bug fixes:
 - Keep synchronized sessions usable when a delayed non-cleanup command returns
   a server error.
 
+- Drop cancellation socket handles immediately and queue prepared-statement
+  deallocation while another operation owns the connection.
+
 - Restore compatibility with the declared Rust 1.85 minimum by avoiding syntax
   stabilized in later compilers.
 

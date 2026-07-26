@@ -46,6 +46,7 @@ pub(crate) struct Conn {
     pub(crate) max_response_size: usize,
     locked: Mutex<Locked>,
     pending_closes: Mutex<Vec<u64>>,
+    pending_deallocates: Mutex<Vec<u64>>,
     closing: AtomicBool,
     operation_state: AtomicU8,
     control: Arc<SocketControl>,
@@ -228,6 +229,7 @@ impl Connection {
         let conn = Conn {
             locked: Mutex::new(locked),
             pending_closes: Mutex::new(Vec::new()),
+            pending_deallocates: Mutex::new(Vec::new()),
             closing: AtomicBool::new(false),
             operation_state: AtomicU8::new(OPERATION_IDLE),
             control,
@@ -387,8 +389,7 @@ impl Connection {
 
     /// Queue a prepared statement for deallocation without waiting for network I/O.
     ///
-    /// Returns `false` when another operation currently owns the connection; the
-    /// server will reclaim the statement when the connection closes in that case.
+    /// Returns `false` only when the connection is already closed.
     pub fn try_deallocate(&self, statement_id: u64) -> bool {
         self.0.try_queue_deallocate(statement_id)
     }
@@ -486,6 +487,16 @@ impl Conn {
         for result_id in pending_closes {
             delayed.add_xcommand_cleanup("close", result_id);
         }
+        let pending_deallocates = match self.pending_deallocates.lock() {
+            Ok(mut pending) => std::mem::take(&mut *pending),
+            Err(poisoned) => {
+                let mut pending = poisoned.into_inner();
+                std::mem::take(&mut *pending)
+            }
+        };
+        for statement_id in pending_deallocates {
+            delayed.add_cleanup("deallocate", format_args!("sDEALLOCATE {statement_id}\n;"));
+        }
         let result = f(state, delayed, sock);
         let operation_timed_out = self.operation_watchdog.disarm(watchdog_token);
         let operation_state = self
@@ -560,7 +571,14 @@ impl Conn {
         let mut guard = match self.locked.try_lock() {
             Ok(guard) => guard,
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-            Err(TryLockError::WouldBlock) => return false,
+            Err(TryLockError::WouldBlock) => {
+                let mut pending = match self.pending_deallocates.lock() {
+                    Ok(pending) => pending,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                pending.push(statement_id);
+                return true;
+            }
         };
         if guard.sock.is_none() {
             return false;
@@ -840,6 +858,26 @@ mod tests {
     }
 
     #[test]
+    fn contended_prepared_deallocation_is_queued() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let mut stream = accept_login(listener);
+            let mut byte = [0];
+            assert_connection_closed(stream.read(&mut byte));
+        });
+        let connection = Connection::new(test_parameters(port)).unwrap();
+
+        let locked = connection.0.locked.lock().unwrap();
+        assert!(connection.try_deallocate(42));
+        assert_eq!(*connection.0.pending_deallocates.lock().unwrap(), [42]);
+        drop(locked);
+        drop(connection);
+
+        server.join().unwrap();
+    }
+
+    #[test]
     fn idle_read_timeout_closes_a_black_holed_connection() {
         let (port, query_received, disconnected) = black_hole_query_server();
         let mut parameters = test_parameters(port);
@@ -1035,7 +1073,7 @@ mod tests {
         server_release.send(()).unwrap();
         assert_connection_closed(
             disconnected
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(Duration::from_secs(2))
                 .expect("timed out upload body remained open"),
         );
         release_sender.send(()).unwrap();
