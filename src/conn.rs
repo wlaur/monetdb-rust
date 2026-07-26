@@ -771,8 +771,22 @@ mod tests {
             assert!(read_message(&mut stream).starts_with(b"sINVALID"));
             assert!(read_message(&mut stream).starts_with(b"sSELECT 1"));
             write_message(&mut stream, b"!42000!delayed failed\n");
-            write_message(&mut stream, b"=OK\n");
+            write_message(
+                &mut stream,
+                concat!(
+                    "&1 42 2 1 1\n",
+                    "% t # table_name\n",
+                    "% value # name\n",
+                    "% int # type\n",
+                    "% 32 # length\n",
+                    "% 0 0 # typesizes\n",
+                    "[ 1\t]\n"
+                )
+                .as_bytes(),
+            );
+            assert!(read_message(&mut stream).starts_with(b"Xclose 42"));
             assert!(read_message(&mut stream).starts_with(b"sSELECT 2"));
+            write_message(&mut stream, b"=OK\n");
             write_message(&mut stream, b"=OK\n");
         });
 

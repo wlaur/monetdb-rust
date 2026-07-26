@@ -2,6 +2,23 @@
 
 ## monetdb NEXTVERSION - YYYY-MM-DD
 
+Bug fixes:
+
+- Close result sets found in the main response before propagating a delayed
+  command error.
+
+- Preserve the next adaptive fetch size when the final window of one result is
+  smaller than requested.
+
+Performance:
+
+- Avoid redundant whole-response scans on fetched row windows and recycle
+  exhausted response buffers.
+
+Documentation:
+
+- Document that a timed-out blocking DNS lookup or Unix-socket connection can
+  leave its bounded worker alive until the operating-system call returns.
 
 ## monetdb 0.2.2-wlaur.1 - 2026-07-26
 
@@ -81,6 +98,9 @@ Breaking changes:
 - `ResultColumn::name()` now returns the bare result-column name. Use
   `ResultColumn::table_name()` for its source table; earlier development
   versions combined the two in `name()`.
+
+- SHA-256 `certhash` prefixes shorter than 16 hexadecimal digits are rejected
+  to prevent weak certificate pins.
 
 
 ## monetdb 0.2.0 - 2024-10-04

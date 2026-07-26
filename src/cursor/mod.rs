@@ -18,7 +18,7 @@ use std::num::NonZeroUsize;
 use std::{io, sync::Arc};
 
 use delayed::DelayedCommands;
-use replies::{BadReply, ReplyBuf, ReplyParser, ResultColumn, ResultSet, response_autocommit};
+use replies::{BadReply, ReplyBuf, ReplyParser, ResultColumn, ResultSet};
 use rowset::RowSet;
 
 use crate::conn::Conn;
@@ -367,24 +367,18 @@ impl Cursor {
         Ok(())
     }
 
-    fn command(&mut self, command: &[&[u8]], vec: &mut Vec<u8>) -> Result<(), CursorError> {
-        self.command_inner(command, vec, true)
+    fn discard_sql_response(&mut self, response: &mut Vec<u8>) {
+        if let Ok(replies) = ReplyParser::new(mem::take(response)) {
+            self.replies = replies;
+            let _ = self.exhaust();
+        }
     }
 
     fn command_raw(&mut self, command: &[&[u8]], vec: &mut Vec<u8>) -> Result<(), CursorError> {
-        self.command_inner(command, vec, false)
-    }
-
-    fn command_inner(
-        &mut self,
-        command: &[&[u8]],
-        vec: &mut Vec<u8>,
-        update_autocommit: bool,
-    ) -> Result<(), CursorError> {
         let mut delayed_error = None;
         self.conn.run_locked_with_timeouts(
             self.timeouts,
-            |state: &mut ServerState,
+            |_state: &mut ServerState,
              delayed: &mut DelayedCommands,
              mut sock: ServerSock|
              -> CursorResult<ServerSock> {
@@ -393,11 +387,6 @@ impl Cursor {
                     delayed.recv_delayed(sock, vec, self.conn.max_response_size)?;
                 vec.clear();
                 sock = MapiReader::to_limited(sock, vec, self.conn.max_response_size)?;
-                if update_autocommit {
-                    if let Some(autocommit) = response_autocommit(vec) {
-                        state.autocommit = autocommit;
-                    }
-                }
                 Ok(sock)
             },
         )?;
@@ -636,7 +625,7 @@ impl Cursor {
         self.reply_size = reply_size.get();
     }
 
-    fn decide_next_fetch(&self) -> CursorResult<(u64, u64, usize, usize)> {
+    fn decide_next_fetch(&self) -> CursorResult<(u64, u64, usize, usize, usize)> {
         let ResultSet {
             result_id,
             next_row,
@@ -648,19 +637,30 @@ impl Cursor {
         let remaining = total_rows
             .checked_sub(*next_row)
             .ok_or(BadReply::TooManyRows { total: *total_rows })?;
+        let next_reply_size = next_window_size(self.reply_size, self.max_prefetch);
         let n = next_fetch_size(self.reply_size, self.max_prefetch, remaining);
-        Ok((*result_id, *next_row, n, columns.len()))
+        Ok((*result_id, *next_row, n, next_reply_size, columns.len()))
     }
 
     fn fetch_more_rows(&mut self) -> CursorResult<()> {
-        let (res_id, start, n, expected_columns) = self.decide_next_fetch()?;
+        let (res_id, start, n, next_reply_size, expected_columns) = self.decide_next_fetch()?;
         let cmd = format!("Xexport {res_id} {start} {n}");
 
-        // Reuse is not possible across calls because the parsed row set owns the buffer.
-        let mut vec = vec![];
+        let mut vec = {
+            let replacement = RowSet::new(ReplyBuf::new(Vec::new()), expected_columns);
+            let ResultSet {
+                row_set, stashed, ..
+            } = self.result_set_mut();
+            let previous = mem::replace(row_set, replacement);
+            if stashed.is_none() {
+                *stashed = Some(previous);
+                Vec::new()
+            } else {
+                previous.finish()?.into_vec()
+            }
+        };
 
-        // execute the command
-        self.command(&[cmd.as_bytes()], &mut vec)?;
+        self.command_raw(&[cmd.as_bytes()], &mut vec)?;
         ReplyParser::detect_errors(&vec)?;
 
         // parse it into a rowset
@@ -668,23 +668,11 @@ impl Cursor {
         let mut fields = [0u64; 4];
         ReplyParser::parse_export_header(&mut buf, &mut fields)?;
         validate_export_header(&fields, res_id, expected_columns, n, start)?;
-        let mut new_row_set = RowSet::new(buf, expected_columns);
+        let new_row_set = RowSet::new(buf, expected_columns);
         validate_fetch_progress(&new_row_set, start, n)?;
 
-        // If we were reading the initial response, save it.
-        // Then install the new rowset, saving the old one if it's the primary.
-        // We know it's the primary when stashed_primary_row_set is still None.
-        let ResultSet {
-            row_set,
-            stashed: stashed_primary_row_set,
-            ..
-        } = self.result_set_mut();
-        mem::swap(row_set, &mut new_row_set);
-        if stashed_primary_row_set.is_none() {
-            // new_row_set is actually the old row set now
-            *stashed_primary_row_set = Some(new_row_set);
-        }
-        self.reply_size = n;
+        self.result_set_mut().row_set = new_row_set;
+        self.reply_size = next_reply_size;
 
         // Now the new rows are in place!
         Ok(())
@@ -722,12 +710,15 @@ fn count_row(next_row: &mut u64, total_rows: u64) -> Result<(), BadReply> {
 }
 
 fn next_fetch_size(previous: usize, max_prefetch: Option<usize>, remaining: u64) -> usize {
-    let desired = previous.saturating_mul(2);
-    let desired = match max_prefetch {
-        Some(limit) => desired.min(limit.saturating_add(1)),
-        None => desired,
-    };
+    let desired = next_window_size(previous, max_prefetch);
     remaining.min(desired as u64) as usize
+}
+
+fn next_window_size(previous: usize, max_prefetch: Option<usize>) -> usize {
+    match max_prefetch {
+        Some(limit) => previous.saturating_mul(2).min(limit.saturating_add(1)),
+        None => previous.saturating_mul(2),
+    }
 }
 
 fn validate_fetch_progress(row_set: &RowSet, start: u64, requested: usize) -> Result<(), BadReply> {
@@ -889,5 +880,7 @@ mod tests {
         assert_eq!(next_fetch_size(200, Some(0), 10_000), 1);
         assert_eq!(next_fetch_size(200, None, 10_000), 400);
         assert_eq!(next_fetch_size(200, None, 250), 250);
+        assert_eq!(next_fetch_size(1_600, None, 1), 1);
+        assert_eq!(next_window_size(1_600, None), 3_200);
     }
 }
