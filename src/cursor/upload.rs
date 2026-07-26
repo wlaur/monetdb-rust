@@ -33,6 +33,7 @@ impl Cursor {
         F: FnMut(&str) -> CursorResult<Cow<'a, [u8]>>,
     {
         let mut refused = None;
+        let mut delayed_error = None;
         self.conn.run_locked_with_timeouts(
             self.timeouts,
             |state,
@@ -40,7 +41,8 @@ impl Cursor {
              mut sock: ServerSock|
              -> CursorResult<ServerSock> {
                 sock = delayed.send_delayed_plus(sock, command)?;
-                sock = delayed.recv_delayed(sock, response, self.conn.max_response_size)?;
+                (sock, delayed_error) =
+                    delayed.recv_delayed(sock, response, self.conn.max_response_size)?;
                 response.clear();
                 loop {
                     sock = MapiReader::to_limited(sock, response, self.conn.max_response_size)?;
@@ -88,6 +90,9 @@ impl Cursor {
                 }
             },
         )?;
+        if let Some(error) = delayed_error {
+            return Err(CursorError::Server(error));
+        }
         if let Some(error) = refused {
             let mut response_problem = ReplyParser::detect_errors(response)
                 .err()
@@ -95,10 +100,10 @@ impl Cursor {
             match ReplyParser::new(mem::take(response)) {
                 Ok(replies) => {
                     self.replies = replies;
-                    if let Err(error) = self.exhaust()
-                        && response_problem.is_none()
-                    {
-                        response_problem = Some(error.to_string());
+                    if let Err(error) = self.exhaust() {
+                        if response_problem.is_none() {
+                            response_problem = Some(error.to_string());
+                        }
                     }
                 }
                 Err(error) => {

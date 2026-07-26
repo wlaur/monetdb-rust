@@ -10,7 +10,7 @@ use atoi::FromRadix10Checked;
 use bstr::BStr;
 use num::{CheckedAdd, CheckedMul, CheckedSub, Zero};
 
-use crate::{CursorResult, cursor::replies::ResultSet};
+use crate::{CursorResult, ResultSet};
 
 use super::{FromMonet, conversion_error, raw_decimal::RawDecimal};
 
@@ -69,7 +69,7 @@ fn test_parse_date() {
 
 impl FromMonet for RawDate {
     fn extract(rs: &ResultSet, colnr: usize) -> CursorResult<Option<Self>> {
-        let Some(mut field) = rs.row_set.get_field_raw(colnr)? else {
+        let Some(mut field) = rs.raw_value(colnr)? else {
             return Ok(None);
         };
         let date = RawDate::parse(&mut field)?;
@@ -198,7 +198,7 @@ fn test_parse_time() {
 
 impl FromMonet for RawTime {
     fn extract(rs: &ResultSet, colnr: usize) -> CursorResult<Option<Self>> {
-        let Some(mut field) = rs.row_set.get_field_raw(colnr)? else {
+        let Some(mut field) = rs.raw_value(colnr)? else {
             return Ok(None);
         };
         let time = RawTime::parse(&mut field)?;
@@ -247,7 +247,7 @@ fn test_parse_timestamp() {
 
 impl FromMonet for RawTimestamp {
     fn extract(rs: &ResultSet, colnr: usize) -> CursorResult<Option<Self>> {
-        let Some(mut field) = rs.row_set.get_field_raw(colnr)? else {
+        let Some(mut field) = rs.raw_value(colnr)? else {
             return Ok(None);
         };
         let timestamp = RawTimestamp::parse(&mut field)?;
@@ -369,7 +369,7 @@ fn test_parse_timetz() {
 
 impl FromMonet for RawTimeTz {
     fn extract(rs: &ResultSet, colnr: usize) -> CursorResult<Option<Self>> {
-        let Some(mut field) = rs.row_set.get_field_raw(colnr)? else {
+        let Some(mut field) = rs.raw_value(colnr)? else {
             return Ok(None);
         };
         let timetz = RawTimeTz::parse(&mut field)?;
@@ -441,7 +441,7 @@ fn test_parse_timestamptz() {
 
 impl FromMonet for RawTimestampTz {
     fn extract(rs: &ResultSet, colnr: usize) -> CursorResult<Option<Self>> {
-        let Some(mut field) = rs.row_set.get_field_raw(colnr)? else {
+        let Some(mut field) = rs.raw_value(colnr)? else {
             return Ok(None);
         };
         let timestamptz = RawTimestampTz::parse(&mut field)?;

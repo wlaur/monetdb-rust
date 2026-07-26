@@ -56,6 +56,7 @@ pub enum Parm {
     ClientPrefix,
     ClientRemark,
     MaxResponseSize,
+    MaxPrefetch,
 
     // Unused but recognized to pass the tests
     TableSchema,
@@ -63,7 +64,6 @@ pub enum Parm {
     Hash,
     Debug,
     Logfile,
-    MaxPrefetch,
 }
 
 impl Parm {
@@ -609,6 +609,8 @@ const fn default_parameter_value_by_index(idx: usize) -> Value {
         Value::Int(0)
     } else if idx == ReplySize.index() {
         Value::Int(200)
+    } else if idx == MaxPrefetch.index() {
+        Value::Int(2500)
     } else if idx == Binary.index() {
         Value::from_static("on")
     } else if idx == ClientInfo.index() {
@@ -912,6 +914,15 @@ impl Parameters {
         Ok(self)
     }
 
+    pub fn set_maxprefetch(&mut self, value: impl Into<i64>) -> ParmResult<()> {
+        self.set(Parm::MaxPrefetch, value.into())
+    }
+
+    pub fn with_maxprefetch(mut self, value: i64) -> ParmResult<Parameters> {
+        self.set_maxprefetch(value)?;
+        Ok(self)
+    }
+
     pub fn set_schema(&mut self, value: &str) -> ParmResult<()> {
         self.set(Parm::Schema, value)
     }
@@ -1078,6 +1089,7 @@ pub struct Validated<'a> {
     pub cert: Cow<'a, str>,
     pub language: Cow<'a, str>,
     pub replysize: usize,
+    pub maxprefetch: Option<usize>,
     pub schema: Cow<'a, str>,
     pub client_info: bool,
     pub client_application: Cow<'a, str>,
@@ -1112,6 +1124,7 @@ impl fmt::Debug for Validated<'_> {
             .field("cert", &self.cert)
             .field("language", &self.language)
             .field("replysize", &self.replysize)
+            .field("maxprefetch", &self.maxprefetch)
             .field("schema", &self.schema)
             .field("client_info", &self.client_info)
             .field("client_application", &self.client_application)
@@ -1155,6 +1168,7 @@ impl Validated<'_> {
         let raw_clientkey: Cow<str> = parms.get_str(ClientKey)?;
         let raw_language: Cow<str> = parms.get_str(Language)?;
         let raw_replysize: i64 = parms.get_int(ReplySize)?;
+        let raw_maxprefetch: i64 = parms.get_int(MaxPrefetch)?;
         let raw_schema: Cow<str> = parms.get_str(Schema)?;
         let raw_sock: Cow<str> = parms.get_str(Sock)?;
         let raw_sockdir: Cow<str> = parms.get_str(SockDir)?;
@@ -1318,6 +1332,13 @@ impl Validated<'_> {
             .ok()
             .filter(|replysize| *replysize != 0)
             .ok_or(ParmError::InvalidValue(Parm::ReplySize))?;
+        let maxprefetch = match raw_maxprefetch {
+            -1 => None,
+            value if value >= 0 => Some(
+                usize::try_from(value).map_err(|_| ParmError::InvalidValue(Parm::MaxPrefetch))?,
+            ),
+            _ => return Err(ParmError::InvalidValue(Parm::MaxPrefetch)),
+        };
         let max_response_size = usize::try_from(raw_max_response_size)
             .ok()
             .filter(|size| *size != 0)
@@ -1334,6 +1355,7 @@ impl Validated<'_> {
             cert: raw_cert,
             language: raw_language,
             replysize,
+            maxprefetch,
             schema: raw_schema,
             connect_timeout,
             read_timeout,
@@ -1434,6 +1456,20 @@ fn validation_rejects_non_positive_reply_sizes() {
             Err(ParmError::InvalidValue(Parm::ReplySize))
         ));
     }
+}
+
+#[test]
+fn validation_accepts_maxprefetch_sentinel_and_nonnegative_values() {
+    for (value, expected) in [(-1, None), (0, Some(0)), (2500, Some(2500))] {
+        let parameters = Parameters::default().with_maxprefetch(value).unwrap();
+        assert_eq!(parameters.validate().unwrap().maxprefetch, expected);
+    }
+
+    let parameters = Parameters::default().with_maxprefetch(-2).unwrap();
+    assert!(matches!(
+        parameters.validate(),
+        Err(ParmError::InvalidValue(Parm::MaxPrefetch))
+    ));
 }
 
 #[test]

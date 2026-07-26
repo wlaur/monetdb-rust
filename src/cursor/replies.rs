@@ -324,15 +324,22 @@ pub enum ReplyParser {
 
 #[derive(Debug)]
 pub struct ResultSet {
-    pub result_id: u64,
-    pub prepared: bool,
-    pub next_row: u64,
-    pub total_rows: u64,
-    pub rows_included: u64,
-    pub columns: Vec<ResultColumn>,
-    pub row_set: RowSet,
-    pub stashed: Option<RowSet>,
-    pub to_close: Option<u64>,
+    pub(crate) result_id: u64,
+    pub(crate) prepared: bool,
+    pub(crate) next_row: u64,
+    pub(crate) total_rows: u64,
+    pub(crate) rows_included: u64,
+    pub(crate) columns: Vec<ResultColumn>,
+    pub(crate) row_set: RowSet,
+    pub(crate) stashed: Option<RowSet>,
+    pub(crate) to_close: Option<u64>,
+}
+
+impl ResultSet {
+    /// Return the current row's unescaped wire value, or `None` for SQL NULL.
+    pub fn raw_value(&self, column: usize) -> CursorResult<Option<&[u8]>> {
+        Ok(self.row_set.get_field_raw(column)?)
+    }
 }
 
 impl Default for ReplyParser {

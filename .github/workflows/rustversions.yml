@@ -10,9 +10,15 @@
 name: Rust versions
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
+
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 jobs:
@@ -22,11 +28,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rustversion: [stable, nightly, beta]
+        rustversion: [1.85.0, stable, beta, nightly]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - run: rustup install ${{ matrix.rustversion }}
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: ${{ matrix.rustversion }}
+          components: clippy
 
       - run: cargo +${{ matrix.rustversion }} test --lib --examples
       - run: cargo +${{ matrix.rustversion }} test --lib --examples --no-default-features
@@ -36,8 +45,6 @@ jobs:
       - run: cargo +${{ matrix.rustversion }} test --doc --no-default-features
       - run: cargo +${{ matrix.rustversion }} test --doc --all-features
 
-      - run: rustup component add --toolchain ${{ matrix.rustversion }} clippy
-
       - run: cargo +${{ matrix.rustversion }} clippy --tests -- -D warnings
       - run: cargo +${{ matrix.rustversion }} clippy --tests --no-default-features -- -D warnings
       - run: cargo +${{ matrix.rustversion }} clippy --tests --all-features -- -D warnings
@@ -45,3 +52,14 @@ jobs:
       - run: cargo +${{ matrix.rustversion }} tree
       - run: cargo +${{ matrix.rustversion }} tree --no-default-features
       - run: cargo +${{ matrix.rustversion }} tree --all-features
+
+  big_endian:
+    name: big-endian check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+          targets: s390x-unknown-linux-gnu
+      - run: cargo check --target s390x-unknown-linux-gnu

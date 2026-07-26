@@ -42,6 +42,7 @@ pub struct CancelHandle(Arc<Conn>);
 
 pub(crate) struct Conn {
     pub(crate) reply_size: usize,
+    pub(crate) max_prefetch: Option<usize>,
     pub(crate) max_response_size: usize,
     locked: Mutex<Locked>,
     pending_closes: Mutex<Vec<u64>>,
@@ -211,6 +212,7 @@ impl Drop for OperationWatchdog {
 impl Connection {
     /// Create a new connection based on the given [`Parameters`] object.
     pub fn new(parameters: Parameters) -> ConnectResult<Connection> {
+        let max_prefetch = parameters.validate()?.maxprefetch;
         let (sock, state, delayed, timeouts) = establish_connection(parameters)?;
 
         let reply_size = state.reply_size;
@@ -232,6 +234,7 @@ impl Connection {
             operation_watchdog,
             timeouts,
             reply_size,
+            max_prefetch,
             max_response_size,
         };
         let connection = Connection(Arc::new(conn));
@@ -352,7 +355,12 @@ impl Connection {
                     sock,
                     &[format!("Xauto_commit {}", i32::from(enabled)).as_bytes()],
                 )?;
-                sock = delayed.recv_delayed(sock, &mut response, self.0.max_response_size)?;
+                let delayed_error;
+                (sock, delayed_error) =
+                    delayed.recv_delayed(sock, &mut response, self.0.max_response_size)?;
+                if let Some(error) = delayed_error {
+                    response_error = Some(CursorError::Server(error));
+                }
                 response.clear();
                 sock = MapiReader::to_limited(sock, &mut response, self.0.max_response_size)?;
                 let expected = if enabled { b"&4 t" } else { b"&4 f" };
@@ -734,6 +742,35 @@ mod tests {
                 ) => {}
             other => panic!("connection remained open: {other:?}"),
         }
+    }
+
+    #[test]
+    fn delayed_server_error_preserves_the_synchronized_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let mut stream = accept_login(listener);
+            assert!(read_message(&mut stream).starts_with(b"sINVALID"));
+            assert!(read_message(&mut stream).starts_with(b"sSELECT 1"));
+            write_message(&mut stream, b"!42000!delayed failed\n");
+            write_message(&mut stream, b"=OK\n");
+            assert!(read_message(&mut stream).starts_with(b"sSELECT 2"));
+            write_message(&mut stream, b"=OK\n");
+        });
+
+        let connection = Connection::new(test_parameters(port)).unwrap();
+        connection
+            .0
+            .run_locked(|_state, delayed, sock| {
+                delayed.add("probe", "sINVALID\n;");
+                Ok(sock)
+            })
+            .unwrap();
+
+        let first = connection.cursor().execute("SELECT 1").unwrap_err();
+        assert!(first.to_string().contains("delayed probe"));
+        connection.cursor().execute("SELECT 2").unwrap();
+        server.join().unwrap();
     }
 
     #[test]

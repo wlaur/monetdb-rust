@@ -22,7 +22,7 @@ mod util;
 pub use conn::{CancelHandle, Connection, ServerInfo, ServerMetadata};
 pub use cursor::{
     BinaryResult, Cursor, CursorError, CursorResult, ServerError,
-    replies::{BadReply, ResultColumn},
+    replies::{BadReply, ResultColumn, ResultSet},
 };
 pub use framing::connecting::{ConnectError, ConnectResult, Endian};
 pub use framing::{FramingError, MAX_TIMEOUT_SECONDS, Timeouts};

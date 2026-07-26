@@ -106,7 +106,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_log() {
         let _exclusion = TEST_LOGGER.start();
         log!(Level::Info, "regular target");
@@ -121,7 +120,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_error() {
         let _exclusion = TEST_LOGGER.start();
         let lvl = Level::Error;
@@ -137,7 +135,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_warn() {
         let _exclusion = TEST_LOGGER.start();
         let lvl = Level::Warn;
@@ -153,7 +150,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_info() {
         let _exclusion = TEST_LOGGER.start();
         let lvl = Level::Info;
@@ -169,7 +165,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_debug() {
         let _exclusion = TEST_LOGGER.start();
         let lvl = Level::Debug;
@@ -185,7 +180,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_trace() {
         let _exclusion = TEST_LOGGER.start();
         let lvl = Level::Trace;
@@ -201,7 +195,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_log_enabled() {
         let _exclusion = TEST_LOGGER.start();
         assert!(log_enabled!(Level::Debug));
