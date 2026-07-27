@@ -150,6 +150,16 @@ impl std::error::Error for ServerError {}
 
 pub type CursorResult<T> = Result<T, CursorError>;
 
+/// A bounded producer for one client-side file requested by MonetDB.
+///
+/// Writes are coalesced into messages up to the size configured on the cursor
+/// operation. Returning an error after a successful write closes the connection
+/// because MAPI has no mid-file upload-abort message.
+pub trait UploadSink {
+    /// Write the next bytes of the requested file.
+    fn write_chunk(&mut self, data: &[u8]) -> CursorResult<()>;
+}
+
 impl From<io::Error> for CursorError {
     fn from(value: io::Error) -> Self {
         IoError::from(value).into()
@@ -271,7 +281,7 @@ impl Cursor {
             command,
             &mut vec,
             upload::DEFAULT_UPLOAD_CHUNK_SIZE,
-            |filename| {
+            |filename, _sink| {
                 Err(CursorError::FileTransfer(format!(
                     "raw execute does not provide client file {filename:?}; use a file-transfer API"
                 )))
@@ -306,13 +316,11 @@ impl Cursor {
 
         let mut vec = self.replies.take_buffer();
         let command = &[b"s", statements.as_bytes(), b"\n;"];
-        self.command_with_uploads(command, &mut vec, upload_chunk_size, |filename| {
-            uploads
-                .get(filename)
-                .map(|data| Cow::Borrowed(data.as_slice()))
-                .ok_or_else(|| {
-                    CursorError::FileTransfer(format!("server requested unknown file {filename:?}"))
-                })
+        self.command_with_uploads(command, &mut vec, upload_chunk_size, |filename, sink| {
+            let data = uploads.get(filename).ok_or_else(|| {
+                CursorError::FileTransfer(format!("server requested unknown file {filename:?}"))
+            })?;
+            sink.write_chunk(data)
         })?;
 
         self.install_response(vec)
@@ -350,9 +358,51 @@ impl Cursor {
 
         let mut vec = self.replies.take_buffer();
         let command = &[b"s", statements.as_bytes(), b"\n;"];
-        self.command_with_uploads(command, &mut vec, upload_chunk_size, |filename| {
-            upload(filename).map(Cow::Owned)
+        self.command_with_uploads(command, &mut vec, upload_chunk_size, |filename, sink| {
+            let data = upload(filename)?;
+            sink.write_chunk(&data)
         })?;
+
+        self.install_response(vec)
+    }
+
+    /// Execute SQL while streaming each named client-side file on demand.
+    ///
+    /// A producer error before its first call to [`UploadSink::write_chunk`]
+    /// refuses that file and preserves the connection. A producer error after
+    /// a successful write closes the connection because MonetDB's MAPI
+    /// protocol cannot abort a file midway.
+    pub fn execute_with_streaming_uploads<F>(
+        &mut self,
+        statements: &str,
+        upload: F,
+    ) -> CursorResult<()>
+    where
+        F: FnMut(&str, &mut dyn UploadSink) -> CursorResult<()>,
+    {
+        self.execute_with_streaming_uploads_with_chunk_size(
+            statements,
+            upload::DEFAULT_UPLOAD_CHUNK_SIZE,
+            upload,
+        )
+    }
+
+    /// Execute SQL with streaming client-side files and a custom maximum
+    /// upload message size.
+    pub fn execute_with_streaming_uploads_with_chunk_size<F>(
+        &mut self,
+        statements: &str,
+        upload_chunk_size: NonZeroUsize,
+        upload: F,
+    ) -> CursorResult<()>
+    where
+        F: FnMut(&str, &mut dyn UploadSink) -> CursorResult<()>,
+    {
+        self.exhaust()?;
+
+        let mut vec = self.replies.take_buffer();
+        let command = &[b"s", statements.as_bytes(), b"\n;"];
+        self.command_with_uploads(command, &mut vec, upload_chunk_size, upload)?;
 
         self.install_response(vec)
     }

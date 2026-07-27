@@ -76,8 +76,8 @@ Current status
 * Binary result windows are available through [`Cursor::fetch_binary()`] and
   [`Cursor::fetch_binary_into()`].
 
-* `COPY BINARY ... ON CLIENT` can upload eager or lazily produced in-memory
-  files, with configurable message sizes.
+* `COPY BINARY ... ON CLIENT` can upload eager, lazily produced in-memory, or
+  bounded streaming files, with configurable message sizes.
 
 * PREPARE result metadata and statement ids are exposed for clients that
   implement parameter binding.
