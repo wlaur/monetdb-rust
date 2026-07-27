@@ -251,7 +251,7 @@ fn test_lazy_binary_uploads() -> Result<()> {
     let mut requested = Vec::new();
     cursor.execute_with_binary_uploads_lazy_with_chunk_size(
         "COPY LITTLE ENDIAN BINARY INTO monetdb_rust_lazy_binary_upload FROM 'c0', 'c1' ON CLIENT",
-        NonZeroUsize::new(4).unwrap(),
+        NonZeroUsize::new(8).unwrap(),
         |filename| {
             requested.push(filename.to_owned());
             match filename {

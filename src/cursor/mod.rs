@@ -152,9 +152,9 @@ pub type CursorResult<T> = Result<T, CursorError>;
 
 /// A bounded producer for one client-side file requested by MonetDB.
 ///
-/// Each call sends at most the upload message size configured on the cursor
-/// operation. Returning an error after a successful write closes the
-/// connection because MAPI has no mid-file upload-abort message.
+/// Writes are coalesced into messages up to the size configured on the cursor
+/// operation. Returning an error after a successful write closes the connection
+/// because MAPI has no mid-file upload-abort message.
 pub trait UploadSink {
     /// Write the next bytes of the requested file.
     fn write_chunk(&mut self, data: &[u8]) -> CursorResult<()>;

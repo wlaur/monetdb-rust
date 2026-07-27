@@ -165,6 +165,7 @@ struct StreamingUpload {
     upload_chunk_size: NonZeroUsize,
     max_response_size: usize,
     framed: Vec<u8>,
+    pending: Vec<u8>,
     started: bool,
     outcome: Option<UploadOutcome>,
 }
@@ -176,6 +177,7 @@ impl StreamingUpload {
             upload_chunk_size,
             max_response_size,
             framed: Vec::new(),
+            pending: Vec::new(),
             started: false,
             outcome: None,
         }
@@ -217,7 +219,22 @@ impl StreamingUpload {
         Ok(())
     }
 
+    fn flush_pending(&mut self) -> CursorResult<()> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let pending = mem::take(&mut self.pending);
+        let result = self.send_message(&pending);
+        self.pending = pending;
+        self.pending.clear();
+        result
+    }
+
     fn finish(mut self) -> CursorResult<UploadOutcome> {
+        if let Some(outcome) = self.outcome.take() {
+            return Ok(outcome);
+        }
+        self.flush_pending()?;
         if let Some(outcome) = self.outcome.take() {
             return Ok(outcome);
         }
@@ -236,7 +253,7 @@ impl StreamingUpload {
 }
 
 impl UploadSink for StreamingUpload {
-    fn write_chunk(&mut self, data: &[u8]) -> CursorResult<()> {
+    fn write_chunk(&mut self, mut data: &[u8]) -> CursorResult<()> {
         if data.is_empty() {
             return Ok(());
         }
@@ -246,12 +263,30 @@ impl UploadSink for StreamingUpload {
             ));
         }
         self.start()?;
-        for chunk in data.chunks(self.upload_chunk_size.get()) {
-            self.send_message(chunk)?;
-            if self.outcome.is_some() {
-                break;
+        let target = self.upload_chunk_size.get();
+        if !self.pending.is_empty() {
+            let needed = target - self.pending.len();
+            let split = needed.min(data.len());
+            self.pending.extend_from_slice(&data[..split]);
+            data = &data[split..];
+            if self.pending.len() == target {
+                self.flush_pending()?;
             }
         }
+        while data.len() >= target {
+            let (chunk, remaining) = data.split_at(target);
+            self.send_message(chunk)?;
+            if self.outcome.is_some() {
+                if remaining.is_empty() {
+                    return Ok(());
+                }
+                return Err(CursorError::FileTransfer(
+                    "server completed the upload before the producer".into(),
+                ));
+            }
+            data = remaining;
+        }
+        self.pending.extend_from_slice(data);
         Ok(())
     }
 }
