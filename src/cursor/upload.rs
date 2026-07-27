@@ -6,12 +6,12 @@
 //
 // Copyright 2024 MonetDB Foundation
 
-use std::{borrow::Cow, io::Write, mem, num::NonZeroUsize};
+use std::{io::Write, mem, num::NonZeroUsize};
 
 use crate::framing::{BLOCKSIZE, ServerSock, reading::MapiReader};
 
 use super::{
-    Cursor, CursorError, CursorResult,
+    Cursor, CursorError, CursorResult, UploadSink,
     delayed::DelayedCommands,
     replies::{ReplyParser, response_autocommit},
 };
@@ -22,7 +22,7 @@ pub(super) const DEFAULT_UPLOAD_CHUNK_SIZE: NonZeroUsize =
     NonZeroUsize::new(16 * 1024 * 1024).unwrap();
 
 impl Cursor {
-    pub(super) fn command_with_uploads<'a, F>(
+    pub(super) fn command_with_uploads<F>(
         &mut self,
         command: &[&[u8]],
         response: &mut Vec<u8>,
@@ -30,7 +30,7 @@ impl Cursor {
         mut upload: F,
     ) -> CursorResult<()>
     where
-        F: FnMut(&str) -> CursorResult<Cow<'a, [u8]>>,
+        F: FnMut(&str, &mut dyn UploadSink) -> CursorResult<()>,
     {
         let mut refused = None;
         let mut delayed_error = None;
@@ -65,18 +65,21 @@ impl Cursor {
                             continue;
                         }
                     };
-                    let data = match upload(filename) {
-                        Ok(data) => data,
+                    let mut sink =
+                        StreamingUpload::new(sock, upload_chunk_size, self.conn.max_response_size);
+                    match upload(filename, &mut sink) {
+                        Ok(()) => {}
+                        Err(error) if sink.started() => return Err(error),
                         Err(error) => {
+                            sock = sink.into_socket()?;
                             refuse_upload(&mut sock, &error)?;
                             if refused.is_none() {
                                 refused = Some(error);
                             }
                             continue;
                         }
-                    };
-                    match send_upload(sock, &data, upload_chunk_size, self.conn.max_response_size)?
-                    {
+                    }
+                    match sink.finish()? {
                         UploadOutcome::Complete(next) => sock = next,
                         UploadOutcome::ServerResponse(next, final_response) => {
                             sock = next;
@@ -157,59 +160,99 @@ fn refuse_upload(sock: &mut ServerSock, error: &CursorError) -> CursorResult<()>
     write_fragment(sock, message.as_bytes(), true, &mut Vec::new())
 }
 
-fn send_upload(
-    mut sock: ServerSock,
-    data: &[u8],
+struct StreamingUpload {
+    sock: Option<ServerSock>,
     upload_chunk_size: NonZeroUsize,
     max_response_size: usize,
-) -> CursorResult<UploadOutcome> {
-    let mut framed = Vec::new();
-    // A non-final message fragment containing just a newline accepts the
-    // upload. See pymonetdb.filetransfer.uploads.Upload._raw and MonetDB's
-    // clients/mapilib/mapi.c `rb FILE` handling.
-    write_fragment(&mut sock, b"\n", false, &mut framed)?;
+    framed: Vec<u8>,
+    started: bool,
+    outcome: Option<UploadOutcome>,
+}
 
-    let mut chunks = data.chunks(upload_chunk_size.get()).peekable();
-    if chunks.peek().is_none() {
-        write_fragment(&mut sock, b"", true, &mut framed)?;
-        match expect_upload_prompt(sock, MORE, max_response_size)? {
-            UploadOutcome::Complete(next) => sock = next,
-            response @ UploadOutcome::ServerResponse(..) => return Ok(response),
-        }
-    } else {
-        let mut prompt = Vec::new();
-        // Every iteration consumes one distinct upload chunk and one server
-        // prompt, so an empty prompt cannot repeat the same request indefinitely.
-        for chunk in chunks {
-            write_fragment(&mut sock, chunk, true, &mut framed)?;
-            prompt.clear();
-            sock = MapiReader::to_limited(sock, &mut prompt, max_response_size)?;
-            if prompt == FILE_TRANSFER {
-                return Ok(UploadOutcome::Complete(sock));
-            }
-            if prompt != MORE {
-                return Ok(UploadOutcome::ServerResponse(sock, prompt));
-            }
+impl StreamingUpload {
+    fn new(sock: ServerSock, upload_chunk_size: NonZeroUsize, max_response_size: usize) -> Self {
+        Self {
+            sock: Some(sock),
+            upload_chunk_size,
+            max_response_size,
+            framed: Vec::new(),
+            started: false,
+            outcome: None,
         }
     }
 
-    // MORE after the last data chunk asks for another message. An empty
-    // message marks EOF; FILE_TRANSFER acknowledges completion.
-    write_fragment(&mut sock, b"", true, &mut framed)?;
-    expect_upload_prompt(sock, FILE_TRANSFER, max_response_size)
+    fn started(&self) -> bool {
+        self.started
+    }
+
+    fn into_socket(mut self) -> CursorResult<ServerSock> {
+        self.sock.take().ok_or(CursorError::Closed)
+    }
+
+    fn start(&mut self) -> CursorResult<()> {
+        if self.started {
+            return Ok(());
+        }
+        let sock = self.sock.as_mut().ok_or(CursorError::Closed)?;
+        // A non-final message fragment containing just a newline accepts the
+        // upload. See pymonetdb.filetransfer.uploads.Upload._raw and MonetDB's
+        // clients/mapilib/mapi.c `rb FILE` handling.
+        write_fragment(sock, b"\n", false, &mut self.framed)?;
+        self.started = true;
+        Ok(())
+    }
+
+    fn send_message(&mut self, data: &[u8]) -> CursorResult<()> {
+        let mut sock = self.sock.take().ok_or(CursorError::Closed)?;
+        write_fragment(&mut sock, data, true, &mut self.framed)?;
+        let mut prompt = Vec::new();
+        sock = MapiReader::to_limited(sock, &mut prompt, self.max_response_size)?;
+        if prompt == MORE {
+            self.sock = Some(sock);
+        } else if prompt == FILE_TRANSFER {
+            self.outcome = Some(UploadOutcome::Complete(sock));
+        } else {
+            self.outcome = Some(UploadOutcome::ServerResponse(sock, prompt));
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> CursorResult<UploadOutcome> {
+        if let Some(outcome) = self.outcome.take() {
+            return Ok(outcome);
+        }
+        self.start()?;
+        self.send_message(b"")?;
+        if let Some(outcome) = self.outcome.take() {
+            return Ok(outcome);
+        }
+        // An empty upload needs one empty data message followed by a second
+        // empty EOF message. A nonempty upload reaches this point only for EOF.
+        self.send_message(b"")?;
+        self.outcome.take().ok_or_else(|| {
+            CursorError::FileTransfer("server requested data after upload EOF".into())
+        })
+    }
 }
 
-fn expect_upload_prompt(
-    mut sock: ServerSock,
-    expected: &[u8],
-    max_response_size: usize,
-) -> CursorResult<UploadOutcome> {
-    let mut prompt = Vec::new();
-    sock = MapiReader::to_limited(sock, &mut prompt, max_response_size)?;
-    if prompt == expected {
-        Ok(UploadOutcome::Complete(sock))
-    } else {
-        Ok(UploadOutcome::ServerResponse(sock, prompt))
+impl UploadSink for StreamingUpload {
+    fn write_chunk(&mut self, data: &[u8]) -> CursorResult<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        if self.outcome.is_some() {
+            return Err(CursorError::FileTransfer(
+                "server completed the upload before the producer".into(),
+            ));
+        }
+        self.start()?;
+        for chunk in data.chunks(self.upload_chunk_size.get()) {
+            self.send_message(chunk)?;
+            if self.outcome.is_some() {
+                break;
+            }
+        }
+        Ok(())
     }
 }
 

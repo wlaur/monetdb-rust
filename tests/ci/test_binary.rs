@@ -279,6 +279,89 @@ fn test_lazy_binary_uploads() -> Result<()> {
 }
 
 #[test]
+fn test_streaming_binary_uploads() -> Result<()> {
+    let connection = get_server().connect()?;
+    if connection.metadata()?.version() < (11, 41, 0) {
+        return Ok(());
+    }
+    let mut cursor = connection.cursor();
+    cursor.execute("DROP TABLE IF EXISTS monetdb_rust_streaming_binary_upload")?;
+    cursor.execute("CREATE TABLE monetdb_rust_streaming_binary_upload(i INT, s VARCHAR(8))")?;
+
+    let mut requested = Vec::new();
+    cursor.execute_with_streaming_uploads_with_chunk_size(
+        "COPY LITTLE ENDIAN BINARY INTO monetdb_rust_streaming_binary_upload FROM 'c0', 'c1' ON CLIENT",
+        NonZeroUsize::new(4).unwrap(),
+        |filename, sink| {
+            requested.push(filename.to_owned());
+            match filename {
+                "c0" => {
+                    sink.write_chunk(&1i32.to_le_bytes())?;
+                    sink.write_chunk(&2i32.to_le_bytes())
+                }
+                "c1" => {
+                    sink.write_chunk(b"one\0")?;
+                    sink.write_chunk(b"two\0")
+                }
+                _ => Err(monetdb::CursorError::FileTransfer(format!(
+                    "unexpected file {filename:?}"
+                ))),
+            }
+        },
+    )?;
+    assert_eq!(requested, ["c0", "c1"]);
+    assert_eq!(cursor.affected_rows(), Some(2));
+
+    cursor.execute("SELECT i, s FROM monetdb_rust_streaming_binary_upload ORDER BY i")?;
+    assert!(cursor.next_row()?);
+    assert_eq!(cursor.get_i32(0)?, Some(1));
+    assert_eq!(cursor.get_str(1)?, Some("one"));
+    assert!(cursor.next_row()?);
+    assert_eq!(cursor.get_i32(0)?, Some(2));
+    assert_eq!(cursor.get_str(1)?, Some("two"));
+    assert!(!cursor.next_row()?);
+    cursor.execute("DROP TABLE monetdb_rust_streaming_binary_upload")?;
+    Ok(())
+}
+
+#[test]
+fn test_streaming_upload_failure_after_data_closes_connection() -> Result<()> {
+    let connection = get_server().connect()?;
+    if connection.metadata()?.version() < (11, 41, 0) {
+        return Ok(());
+    }
+    let mut cursor = connection.cursor();
+    cursor.execute("DROP TABLE IF EXISTS monetdb_rust_failed_streaming_upload")?;
+    cursor.execute("CREATE TABLE monetdb_rust_failed_streaming_upload(i INT)")?;
+    connection.set_autocommit(false)?;
+
+    let error = cursor
+        .execute_with_streaming_uploads(
+            "COPY LITTLE ENDIAN BINARY INTO monetdb_rust_failed_streaming_upload FROM 'c0' ON CLIENT",
+            |_filename, sink| {
+                sink.write_chunk(&1i32.to_le_bytes())?;
+                Err(monetdb::CursorError::FileTransfer(
+                    "intentional mid-file failure".into(),
+                ))
+            },
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("intentional mid-file failure"));
+    assert!(matches!(
+        cursor.execute("SELECT 42"),
+        Err(monetdb::CursorError::Closed)
+    ));
+
+    let verification = get_server().connect()?;
+    let mut verification_cursor = verification.cursor();
+    verification_cursor.execute("SELECT COUNT(*) FROM monetdb_rust_failed_streaming_upload")?;
+    assert!(verification_cursor.next_row()?);
+    assert_eq!(verification_cursor.get_i64(0)?, Some(0));
+    verification_cursor.execute("DROP TABLE monetdb_rust_failed_streaming_upload")?;
+    Ok(())
+}
+
+#[test]
 fn test_empty_binary_upload_preserves_connection() -> Result<()> {
     let connection = get_server().connect()?;
     if connection.metadata()?.version() < (11, 41, 0) {
