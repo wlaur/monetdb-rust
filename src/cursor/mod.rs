@@ -11,6 +11,11 @@ pub(crate) mod replies;
 pub(crate) mod rowset;
 mod upload;
 
+/// Default maximum message size used by client-side upload APIs.
+pub const DEFAULT_UPLOAD_CHUNK_SIZE_BYTES: usize = 16 * 1024 * 1024;
+/// Payload bytes carried by one MAPI framing block.
+pub const MAPI_BLOCK_SIZE_BYTES: usize = crate::framing::BLOCKSIZE;
+
 use std::borrow::Cow;
 use std::fmt;
 use std::mem;

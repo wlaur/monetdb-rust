@@ -21,7 +21,8 @@ mod util;
 
 pub use conn::{CancelHandle, Connection, ServerInfo, ServerMetadata};
 pub use cursor::{
-    BinaryResult, Cursor, CursorError, CursorResult, ServerError, UploadSink,
+    BinaryResult, Cursor, CursorError, CursorResult, DEFAULT_UPLOAD_CHUNK_SIZE_BYTES,
+    MAPI_BLOCK_SIZE_BYTES, ServerError, UploadSink,
     replies::{BadReply, ResultColumn, ResultSet},
 };
 pub use framing::connecting::{ConnectError, ConnectResult, Endian};

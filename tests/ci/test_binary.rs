@@ -295,13 +295,11 @@ fn test_streaming_binary_uploads() -> Result<()> {
         |filename, sink| {
             requested.push(filename.to_owned());
             match filename {
-                "c0" => {
-                    sink.write_chunk(&1i32.to_le_bytes())?;
-                    sink.write_chunk(&2i32.to_le_bytes())
-                }
+                "c0" => sink.write_chunk(&[1i32.to_le_bytes(), 2i32.to_le_bytes()].concat()),
                 "c1" => {
-                    sink.write_chunk(b"one\0")?;
-                    sink.write_chunk(b"two\0")
+                    sink.write_chunk(b"o")?;
+                    sink.write_chunk(b"ne\0t")?;
+                    sink.write_chunk(b"wo\0")
                 }
                 _ => Err(monetdb::CursorError::FileTransfer(format!(
                     "unexpected file {filename:?}"
@@ -334,10 +332,10 @@ fn test_streaming_upload_failure_after_data_closes_connection() -> Result<()> {
     cursor.execute("DROP TABLE IF EXISTS monetdb_rust_failed_streaming_upload")?;
     cursor.execute("CREATE TABLE monetdb_rust_failed_streaming_upload(i INT)")?;
     connection.set_autocommit(false)?;
-
     let error = cursor
-        .execute_with_streaming_uploads(
+        .execute_with_streaming_uploads_with_chunk_size(
             "COPY LITTLE ENDIAN BINARY INTO monetdb_rust_failed_streaming_upload FROM 'c0' ON CLIENT",
+            NonZeroUsize::new(4).unwrap(),
             |_filename, sink| {
                 sink.write_chunk(&1i32.to_le_bytes())?;
                 Err(monetdb::CursorError::FileTransfer(
@@ -371,10 +369,9 @@ fn test_empty_binary_upload_preserves_connection() -> Result<()> {
     cursor.execute("DROP TABLE IF EXISTS monetdb_rust_empty_binary_upload")?;
     cursor.execute("CREATE TABLE monetdb_rust_empty_binary_upload(i INT)")?;
 
-    let uploads = HashMap::from([("c0".into(), Vec::new())]);
-    cursor.execute_with_binary_uploads(
+    cursor.execute_with_streaming_uploads(
         "COPY LITTLE ENDIAN BINARY INTO monetdb_rust_empty_binary_upload FROM 'c0' ON CLIENT",
-        &uploads,
+        |_filename, _sink| Ok(()),
     )?;
     assert_eq!(cursor.affected_rows(), Some(0));
 
@@ -433,6 +430,11 @@ fn test_server_abort_during_binary_upload_preserves_connection() -> Result<()> {
         )
         .unwrap_err();
     assert!(!error.to_string().is_empty());
+    assert!(
+        !error
+            .to_string()
+            .contains("server completed the upload before the producer")
+    );
 
     cursor.execute("SELECT 42")?;
     assert!(cursor.next_row()?);

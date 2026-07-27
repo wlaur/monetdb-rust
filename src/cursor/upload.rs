@@ -19,7 +19,7 @@ use super::{
 const FILE_TRANSFER: &[u8] = b"\x01\x03\n";
 const MORE: &[u8] = b"\x01\x02\n";
 pub(super) const DEFAULT_UPLOAD_CHUNK_SIZE: NonZeroUsize =
-    NonZeroUsize::new(16 * 1024 * 1024).unwrap();
+    NonZeroUsize::new(super::DEFAULT_UPLOAD_CHUNK_SIZE_BYTES).unwrap();
 
 impl Cursor {
     pub(super) fn command_with_uploads<F>(
@@ -69,7 +69,16 @@ impl Cursor {
                         StreamingUpload::new(sock, upload_chunk_size, self.conn.max_response_size);
                     match upload(filename, &mut sink) {
                         Ok(()) => {}
-                        Err(error) if sink.started() => return Err(error),
+                        Err(error) if sink.started() => match sink.take_outcome() {
+                            Some(UploadOutcome::ServerResponse(next, final_response)) => {
+                                response.extend_from_slice(&final_response);
+                                if let Some(autocommit) = response_autocommit(response) {
+                                    state.autocommit = autocommit;
+                                }
+                                return Ok(next);
+                            }
+                            Some(UploadOutcome::Complete(_)) | None => return Err(error),
+                        },
                         Err(error) => {
                             sock = sink.into_socket()?;
                             refuse_upload(&mut sock, &error)?;
@@ -191,6 +200,10 @@ impl StreamingUpload {
         self.sock.take().ok_or(CursorError::Closed)
     }
 
+    fn take_outcome(&mut self) -> Option<UploadOutcome> {
+        self.outcome.take()
+    }
+
     fn start(&mut self) -> CursorResult<()> {
         if self.started {
             return Ok(());
@@ -243,8 +256,7 @@ impl StreamingUpload {
         if let Some(outcome) = self.outcome.take() {
             return Ok(outcome);
         }
-        // An empty upload needs one empty data message followed by a second
-        // empty EOF message. A nonempty upload reaches this point only for EOF.
+        // MonetDB can request a second empty message to terminate an empty file.
         self.send_message(b"")?;
         self.outcome.take().ok_or_else(|| {
             CursorError::FileTransfer("server requested data after upload EOF".into())
@@ -271,6 +283,11 @@ impl UploadSink for StreamingUpload {
             data = &data[split..];
             if self.pending.len() == target {
                 self.flush_pending()?;
+                if self.outcome.is_some() && !data.is_empty() {
+                    return Err(CursorError::FileTransfer(
+                        "server completed the upload before the producer".into(),
+                    ));
+                }
             }
         }
         while data.len() >= target {
