@@ -52,7 +52,7 @@ impl Cursor {
                         }
                         return Ok(sock);
                     };
-                    let filename = match request.strip_prefix("rb ") {
+                    let filename = match upload_filename(&request) {
                         Some(filename) => filename,
                         None => {
                             let error = CursorError::FileTransfer(format!(
@@ -70,14 +70,11 @@ impl Cursor {
                     match upload(filename, &mut sink) {
                         Ok(()) => {}
                         Err(error) if sink.started() => match sink.take_outcome() {
-                            Some(UploadOutcome::ServerResponse(next, final_response)) => {
-                                response.extend_from_slice(&final_response);
-                                if let Some(autocommit) = response_autocommit(response) {
-                                    state.autocommit = autocommit;
-                                }
-                                return Ok(next);
+                            Some(UploadOutcome::Complete(next)) => {
+                                sock = next;
+                                continue;
                             }
-                            Some(UploadOutcome::Complete(_)) | None => return Err(error),
+                            Some(UploadOutcome::ServerResponse(_, _)) | None => return Err(error),
                         },
                         Err(error) => {
                             sock = sink.into_socket()?;
@@ -137,6 +134,14 @@ impl Cursor {
             Ok(())
         }
     }
+}
+
+fn upload_filename(request: &str) -> Option<&str> {
+    if let Some(filename) = request.strip_prefix("rb ") {
+        return Some(filename);
+    }
+    let filename = request.strip_prefix("r 0 ")?;
+    (!filename.is_empty()).then_some(filename)
 }
 
 fn take_file_request(response: &mut Vec<u8>) -> CursorResult<Option<String>> {
@@ -359,6 +364,14 @@ mod tests {
     fn ignores_embedded_file_transfer_marker() {
         let mut response = b"[ \"prefix\x01\x03\nrb not-a-request\"\t]\n".to_vec();
         assert_eq!(take_file_request(&mut response).unwrap(), None);
+    }
+
+    #[test]
+    fn accepts_binary_and_initial_text_upload_requests() {
+        assert_eq!(upload_filename("rb c0"), Some("c0"));
+        assert_eq!(upload_filename("r 0 c1"), Some("c1"));
+        assert_eq!(upload_filename("r 42 c1"), None);
+        assert_eq!(upload_filename("wb output"), None);
     }
 
     #[test]

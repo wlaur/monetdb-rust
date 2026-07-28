@@ -383,6 +383,58 @@ fn test_empty_binary_upload_preserves_connection() -> Result<()> {
 }
 
 #[test]
+fn test_empty_in_memory_binary_upload_preserves_connection() -> Result<()> {
+    let connection = get_server().connect()?;
+    if connection.metadata()?.version() < (11, 41, 0) {
+        return Ok(());
+    }
+    let mut cursor = connection.cursor();
+    cursor.execute("DROP TABLE IF EXISTS monetdb_rust_empty_in_memory_binary_upload")?;
+    cursor.execute("CREATE TABLE monetdb_rust_empty_in_memory_binary_upload(i INT)")?;
+
+    let uploads = HashMap::from([("c0".into(), Vec::new())]);
+    cursor.execute_with_binary_uploads(
+        "COPY LITTLE ENDIAN BINARY INTO monetdb_rust_empty_in_memory_binary_upload FROM 'c0' ON CLIENT",
+        &uploads,
+    )?;
+    assert_eq!(cursor.affected_rows(), Some(0));
+
+    cursor.execute("SELECT 42")?;
+    assert!(cursor.next_row()?);
+    assert_eq!(cursor.get_i32(0)?, Some(42));
+    cursor.execute("DROP TABLE monetdb_rust_empty_in_memory_binary_upload")?;
+    Ok(())
+}
+
+#[test]
+fn test_server_completion_during_binary_upload_preserves_connection() -> Result<()> {
+    let connection = get_server().connect()?;
+    if connection.metadata()?.version() < (11, 41, 0) {
+        return Ok(());
+    }
+    let mut cursor = connection.cursor();
+    cursor.execute("DROP TABLE IF EXISTS monetdb_rust_completed_binary_upload")?;
+    cursor.execute("CREATE TABLE monetdb_rust_completed_binary_upload(i INT)")?;
+    cursor.execute_with_streaming_uploads_with_chunk_size(
+        "COPY 1 RECORDS INTO monetdb_rust_completed_binary_upload FROM 'c0' ON CLIENT",
+        NonZeroUsize::new(4).unwrap(),
+        |_filename, sink| sink.write_chunk(b"1\n2\n3\n4\n"),
+    )?;
+    assert_eq!(cursor.affected_rows(), Some(1));
+
+    cursor.execute("SELECT i FROM monetdb_rust_completed_binary_upload")?;
+    assert!(cursor.next_row()?);
+    assert_eq!(cursor.get_i32(0)?, Some(1));
+    assert!(!cursor.next_row()?);
+
+    cursor.execute("SELECT 42")?;
+    assert!(cursor.next_row()?);
+    assert_eq!(cursor.get_i32(0)?, Some(42));
+    cursor.execute("DROP TABLE monetdb_rust_completed_binary_upload")?;
+    Ok(())
+}
+
+#[test]
 fn test_refused_binary_upload_preserves_connection() -> Result<()> {
     let connection = get_server().connect()?;
     if connection.metadata()?.version() < (11, 41, 0) {
