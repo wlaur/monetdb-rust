@@ -15,6 +15,9 @@ Performance:
 - Avoid redundant whole-response scans on fetched row windows and recycle
   exhausted response buffers.
 
+- Frame streaming uploads with scatter writes so payload bytes are not copied
+  into a second message-sized buffer.
+
 Documentation:
 
 - Document that a timed-out blocking DNS lookup or Unix-socket connection can

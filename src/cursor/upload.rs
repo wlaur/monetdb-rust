@@ -6,7 +6,11 @@
 //
 // Copyright 2024 MonetDB Foundation
 
-use std::{io::Write, mem, num::NonZeroUsize};
+use std::{
+    io::{IoSlice, Write},
+    mem,
+    num::NonZeroUsize,
+};
 
 use crate::framing::{BLOCKSIZE, ServerSock, reading::MapiReader};
 
@@ -18,6 +22,7 @@ use super::{
 
 const FILE_TRANSFER: &[u8] = b"\x01\x03\n";
 const MORE: &[u8] = b"\x01\x02\n";
+const SCATTER_BLOCKS_PER_WRITE: usize = 64;
 pub(super) const DEFAULT_UPLOAD_CHUNK_SIZE: NonZeroUsize =
     NonZeroUsize::new(super::DEFAULT_UPLOAD_CHUNK_SIZE_BYTES).unwrap();
 
@@ -171,14 +176,13 @@ fn take_file_request(response: &mut Vec<u8>) -> CursorResult<Option<String>> {
 fn refuse_upload(sock: &mut ServerSock, error: &CursorError) -> CursorResult<()> {
     let mut message = error.to_string().replace(['\r', '\n'], " ");
     message.push('\n');
-    write_fragment(sock, message.as_bytes(), true, &mut Vec::new())
+    write_fragment(sock, message.as_bytes(), true)
 }
 
 struct StreamingUpload {
     sock: Option<ServerSock>,
     upload_chunk_size: NonZeroUsize,
     max_response_size: usize,
-    framed: Vec<u8>,
     pending: Vec<u8>,
     started: bool,
     outcome: Option<UploadOutcome>,
@@ -190,7 +194,6 @@ impl StreamingUpload {
             sock: Some(sock),
             upload_chunk_size,
             max_response_size,
-            framed: Vec::new(),
             pending: Vec::new(),
             started: false,
             outcome: None,
@@ -217,14 +220,14 @@ impl StreamingUpload {
         // A non-final message fragment containing just a newline accepts the
         // upload. See pymonetdb.filetransfer.uploads.Upload._raw and MonetDB's
         // clients/mapilib/mapi.c `rb FILE` handling.
-        write_fragment(sock, b"\n", false, &mut self.framed)?;
+        write_fragment(sock, b"\n", false)?;
         self.started = true;
         Ok(())
     }
 
     fn send_message(&mut self, data: &[u8]) -> CursorResult<()> {
         let mut sock = self.sock.take().ok_or(CursorError::Closed)?;
-        write_fragment(&mut sock, data, true, &mut self.framed)?;
+        write_fragment(&mut sock, data, true)?;
         let mut prompt = Vec::new();
         sock = MapiReader::to_limited(sock, &mut prompt, self.max_response_size)?;
         if prompt == MORE {
@@ -318,36 +321,107 @@ enum UploadOutcome {
     ServerResponse(ServerSock, Vec<u8>),
 }
 
-fn write_fragment(
-    sock: &mut impl Write,
-    mut data: &[u8],
-    finish: bool,
-    framed: &mut Vec<u8>,
-) -> CursorResult<()> {
-    framed.clear();
+fn write_fragment(sock: &mut impl Write, data: &[u8], finish: bool) -> CursorResult<()> {
     if data.is_empty() {
         if finish {
-            framed.extend_from_slice(&1u16.to_le_bytes());
+            sock.write_all(&1u16.to_le_bytes())?;
         }
-    } else {
-        framed.reserve(data.len() + 2 * data.len().div_ceil(BLOCKSIZE));
-        while !data.is_empty() {
-            let length = data.len().min(BLOCKSIZE);
-            let (chunk, remaining) = data.split_at(length);
-            let last = finish && remaining.is_empty();
-            let header = ((length as u16) << 1) | u16::from(last);
-            framed.extend_from_slice(&header.to_le_bytes());
-            framed.extend_from_slice(chunk);
-            data = remaining;
+        return Ok(());
+    }
+
+    let blocks = data.len().div_ceil(BLOCKSIZE);
+    let headers = (0..blocks)
+        .map(|index| {
+            let offset = index * BLOCKSIZE;
+            let length = (data.len() - offset).min(BLOCKSIZE);
+            let last = finish && index + 1 == blocks;
+            (((length as u16) << 1) | u16::from(last)).to_le_bytes()
+        })
+        .collect::<Vec<_>>();
+    for first in (0..blocks).step_by(SCATTER_BLOCKS_PER_WRITE) {
+        let last = (first + SCATTER_BLOCKS_PER_WRITE).min(blocks);
+        let mut slices = Vec::with_capacity((last - first) * 2);
+        for (index, header) in headers.iter().enumerate().take(last).skip(first) {
+            let offset = index * BLOCKSIZE;
+            let end = (offset + BLOCKSIZE).min(data.len());
+            slices.push(IoSlice::new(header));
+            slices.push(IoSlice::new(&data[offset..end]));
+        }
+        write_all_vectored(sock, &mut slices)?;
+    }
+    Ok(())
+}
+
+fn write_all_vectored(writer: &mut impl Write, buffers: &mut [IoSlice<'_>]) -> std::io::Result<()> {
+    let mut remaining = buffers;
+    IoSlice::advance_slices(&mut remaining, 0);
+    while !remaining.is_empty() {
+        match writer.write_vectored(remaining) {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "failed to write framed upload",
+                ));
+            }
+            Ok(written) => IoSlice::advance_slices(&mut remaining, written),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
         }
     }
-    sock.write_all(framed)?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn copied_fragment(data: &[u8], finish: bool) -> Vec<u8> {
+        let mut framed = Vec::new();
+        if data.is_empty() {
+            if finish {
+                framed.extend_from_slice(&1u16.to_le_bytes());
+            }
+            return framed;
+        }
+        for (index, chunk) in data.chunks(BLOCKSIZE).enumerate() {
+            let last = finish && (index + 1) * BLOCKSIZE >= data.len();
+            let header = ((chunk.len() as u16) << 1) | u16::from(last);
+            framed.extend_from_slice(&header.to_le_bytes());
+            framed.extend_from_slice(chunk);
+        }
+        framed
+    }
+
+    struct PartialWriter {
+        output: Vec<u8>,
+        limit: usize,
+    }
+
+    impl Write for PartialWriter {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            let written = data.len().min(self.limit);
+            self.output.extend_from_slice(&data[..written]);
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn write_vectored(&mut self, buffers: &[IoSlice<'_>]) -> std::io::Result<usize> {
+            let mut written = 0;
+            for buffer in buffers {
+                let count = buffer.len().min(self.limit - written);
+                self.output.extend_from_slice(&buffer[..count]);
+                written += count;
+                if written == self.limit {
+                    break;
+                }
+            }
+            Ok(written)
+        }
+    }
 
     #[test]
     fn extracts_file_request_and_preserves_query_output() {
@@ -378,8 +452,7 @@ mod tests {
     fn batches_fragment_headers_and_payload() {
         let data = vec![b'x'; BLOCKSIZE + 1];
         let mut output = Vec::new();
-        let mut framed = Vec::new();
-        write_fragment(&mut output, &data, true, &mut framed).unwrap();
+        write_fragment(&mut output, &data, true).unwrap();
 
         assert_eq!(&output[..2], &((BLOCKSIZE as u16) << 1).to_le_bytes());
         let second_header = 2 + BLOCKSIZE;
@@ -388,5 +461,30 @@ mod tests {
             &3u16.to_le_bytes()
         );
         assert_eq!(output.len(), data.len() + 4);
+    }
+
+    #[test]
+    fn scatter_framing_handles_partial_vectored_writes() {
+        let data = vec![b'x'; 2 * BLOCKSIZE + 17];
+        let mut output = PartialWriter {
+            output: Vec::new(),
+            limit: 37,
+        };
+
+        write_fragment(&mut output, &data, true).unwrap();
+
+        assert_eq!(output.output, copied_fragment(&data, true));
+    }
+
+    proptest! {
+        #[test]
+        fn scatter_framing_matches_copied_framing(
+            data in prop::collection::vec(any::<u8>(), 0..(4 * BLOCKSIZE + 10)),
+            finish in any::<bool>(),
+        ) {
+            let mut output = Vec::new();
+            write_fragment(&mut output, &data, finish).unwrap();
+            prop_assert_eq!(output, copied_fragment(&data, finish));
+        }
     }
 }
