@@ -159,7 +159,7 @@ pub type CursorResult<T> = Result<T, CursorError>;
 ///
 /// Writes are coalesced into messages up to the size configured on the cursor
 /// operation. Returning an error after a successful write closes the connection
-/// because MAPI has no mid-file upload-abort message.
+/// unless the server already completed the upload.
 pub trait UploadSink {
     /// Write the next bytes of the requested file.
     fn write_chunk(&mut self, data: &[u8]) -> CursorResult<()>;
@@ -375,8 +375,8 @@ impl Cursor {
     ///
     /// A producer error before its first call to [`UploadSink::write_chunk`]
     /// refuses that file and preserves the connection. A producer error after
-    /// a successful write closes the connection because MonetDB's MAPI
-    /// protocol cannot abort a file midway.
+    /// a successful write closes the connection unless MonetDB already
+    /// completed the file and returned to the command response.
     pub fn execute_with_streaming_uploads<F>(
         &mut self,
         statements: &str,

@@ -10,10 +10,16 @@ Bug fixes:
 - Preserve the next adaptive fetch size when the final window of one result is
   smaller than requested.
 
+- Preserve a reusable connection when the server completes an upload before
+  the producer supplies its final chunk.
+
 Performance:
 
 - Avoid redundant whole-response scans on fetched row windows and recycle
   exhausted response buffers.
+
+- Frame streaming uploads with scatter writes so payload bytes are not copied
+  into a second message-sized buffer.
 
 Documentation:
 
