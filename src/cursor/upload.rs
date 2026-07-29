@@ -86,7 +86,7 @@ impl Cursor {
                         Err(error) if sink.started() => match sink.take_outcome() {
                             Some(UploadOutcome::Complete(next)) => {
                                 sock = next;
-                                if !is_upload_outcome_signal(&error) {
+                                if !matches!(error, CursorError::UploadComplete) {
                                     producer_error = Some(error);
                                 }
                                 continue;
@@ -97,7 +97,7 @@ impl Cursor {
                                 if let Some(autocommit) = response_autocommit(response) {
                                     state.autocommit = autocommit;
                                 }
-                                if !is_upload_outcome_signal(&error) {
+                                if !matches!(error, CursorError::UploadComplete) {
                                     producer_error = Some(error);
                                 }
                                 return Ok(sock);
@@ -342,11 +342,7 @@ impl UploadSink for StreamingUpload {
 }
 
 fn upload_outcome_signal() -> CursorError {
-    CursorError::FileTransfer("server completed the upload before the producer".into())
-}
-
-fn is_upload_outcome_signal(error: &CursorError) -> bool {
-    error == &upload_outcome_signal()
+    CursorError::UploadComplete
 }
 
 enum UploadOutcome {

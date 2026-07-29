@@ -435,6 +435,39 @@ fn test_server_completion_during_binary_upload_preserves_connection() -> Result<
 }
 
 #[test]
+fn test_early_upload_completion_is_not_matched_by_error_text() -> Result<()> {
+    let connection = get_server().connect()?;
+    if connection.metadata()?.version() < (11, 41, 0) {
+        return Ok(());
+    }
+    let mut cursor = connection.cursor();
+    cursor.execute("DROP TABLE IF EXISTS monetdb_rust_structured_upload_completion")?;
+    cursor.execute("CREATE TABLE monetdb_rust_structured_upload_completion(i INT)")?;
+    let error = cursor
+        .execute_with_streaming_uploads_with_chunk_size(
+            "COPY 1 RECORDS INTO monetdb_rust_structured_upload_completion FROM 'c0' ON CLIENT",
+            NonZeroUsize::new(4).unwrap(),
+            |_filename, sink| match sink.write_chunk(b"1\n2\n3\n4\n") {
+                Err(monetdb::CursorError::UploadComplete) => {
+                    Err(monetdb::CursorError::FileTransfer(
+                        "server completed the upload before the producer".into(),
+                    ))
+                }
+                result => result,
+            },
+        )
+        .unwrap_err();
+    assert!(matches!(error, monetdb::CursorError::FileTransfer(_)));
+
+    cursor.execute("SELECT i FROM monetdb_rust_structured_upload_completion")?;
+    assert!(cursor.next_row()?);
+    assert_eq!(cursor.get_i32(0)?, Some(1));
+    assert!(!cursor.next_row()?);
+    cursor.execute("DROP TABLE monetdb_rust_structured_upload_completion")?;
+    Ok(())
+}
+
+#[test]
 fn test_refused_binary_upload_preserves_connection() -> Result<()> {
     let connection = get_server().connect()?;
     if connection.metadata()?.version() < (11, 41, 0) {

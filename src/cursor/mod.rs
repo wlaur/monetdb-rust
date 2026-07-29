@@ -81,6 +81,12 @@ pub enum CursorError {
     /// The server requested an invalid or unavailable client-side file.
     #[error("file transfer failed: {0}")]
     FileTransfer(String),
+    /// The server completed a streaming upload before the producer exhausted its input.
+    ///
+    /// Upload callbacks should propagate this value unchanged. The cursor consumes it as
+    /// successful early completion rather than returning it to the caller.
+    #[error("server completed the upload before the producer")]
+    UploadComplete,
     /// A client-side upload refusal and the server's final response to it.
     #[error("{refusal}; server response: {server}")]
     UploadRefused {
