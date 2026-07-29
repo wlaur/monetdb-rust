@@ -2,7 +2,16 @@
 
 ## monetdb NEXTVERSION - YYYY-MM-DD
 
+New features:
+
+- Stream bounded client uploads through `execute_with_streaming_uploads`
+  without materializing a complete file in memory.
+
 Bug fixes:
+
+- Preserve the server response and reusable connection when MonetDB rejects a
+  streaming upload, and surface unrelated producer failures after early
+  completion.
 
 - Close result sets found in the main response before propagating a delayed
   command error.

@@ -38,6 +38,7 @@ impl Cursor {
         F: FnMut(&str, &mut dyn UploadSink) -> CursorResult<()>,
     {
         let mut refused = None;
+        let mut producer_error = None;
         let mut delayed_error = None;
         self.conn.run_locked_with_timeouts(
             self.timeouts,
@@ -72,14 +73,36 @@ impl Cursor {
                     };
                     let mut sink =
                         StreamingUpload::new(sock, upload_chunk_size, self.conn.max_response_size);
+                    if let Some(error) = producer_error.as_ref() {
+                        sock = sink.into_socket()?;
+                        refuse_upload(&mut sock, error)?;
+                        if refused.is_none() {
+                            refused = Some(error.clone());
+                        }
+                        continue;
+                    }
                     match upload(filename, &mut sink) {
                         Ok(()) => {}
                         Err(error) if sink.started() => match sink.take_outcome() {
                             Some(UploadOutcome::Complete(next)) => {
                                 sock = next;
+                                if !is_upload_outcome_signal(&error) {
+                                    producer_error = Some(error);
+                                }
                                 continue;
                             }
-                            Some(UploadOutcome::ServerResponse(_, _)) | None => return Err(error),
+                            Some(UploadOutcome::ServerResponse(next, final_response)) => {
+                                sock = next;
+                                response.extend_from_slice(&final_response);
+                                if let Some(autocommit) = response_autocommit(response) {
+                                    state.autocommit = autocommit;
+                                }
+                                if !is_upload_outcome_signal(&error) {
+                                    producer_error = Some(error);
+                                }
+                                return Ok(sock);
+                            }
+                            None => return Err(error),
                         },
                         Err(error) => {
                             sock = sink.into_socket()?;
@@ -107,6 +130,14 @@ impl Cursor {
         if let Some(error) = delayed_error {
             self.discard_sql_response(response);
             return Err(CursorError::Server(error));
+        }
+        if let Some(error) = producer_error {
+            if let Err(server_error) = ReplyParser::detect_errors(response) {
+                self.discard_sql_response(response);
+                return Err(server_error);
+            }
+            self.discard_sql_response(response);
+            return Err(error);
         }
         if let Some(error) = refused {
             let mut response_problem = ReplyParser::detect_errors(response)
@@ -278,9 +309,7 @@ impl UploadSink for StreamingUpload {
             return Ok(());
         }
         if self.outcome.is_some() {
-            return Err(CursorError::FileTransfer(
-                "server completed the upload before the producer".into(),
-            ));
+            return Err(upload_outcome_signal());
         }
         self.start()?;
         let target = self.upload_chunk_size.get();
@@ -292,9 +321,7 @@ impl UploadSink for StreamingUpload {
             if self.pending.len() == target {
                 self.flush_pending()?;
                 if self.outcome.is_some() && !data.is_empty() {
-                    return Err(CursorError::FileTransfer(
-                        "server completed the upload before the producer".into(),
-                    ));
+                    return Err(upload_outcome_signal());
                 }
             }
         }
@@ -305,15 +332,21 @@ impl UploadSink for StreamingUpload {
                 if remaining.is_empty() {
                     return Ok(());
                 }
-                return Err(CursorError::FileTransfer(
-                    "server completed the upload before the producer".into(),
-                ));
+                return Err(upload_outcome_signal());
             }
             data = remaining;
         }
         self.pending.extend_from_slice(data);
         Ok(())
     }
+}
+
+fn upload_outcome_signal() -> CursorError {
+    CursorError::FileTransfer("server completed the upload before the producer".into())
+}
+
+fn is_upload_outcome_signal(error: &CursorError) -> bool {
+    error == &upload_outcome_signal()
 }
 
 enum UploadOutcome {
