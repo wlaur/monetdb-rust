@@ -1020,6 +1020,90 @@ mod tests {
         (port, upload_receiver, release_sender, disconnect_receiver)
     }
 
+    fn early_upload_response_server(response: &'static [u8]) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        thread::spawn(move || {
+            let mut stream = accept_login(listener);
+            let _query = read_message(&mut stream);
+            write_message(&mut stream, b"\x01\x03\nrb c0\n");
+            let _upload = read_message(&mut stream);
+            write_message(&mut stream, response);
+            let _next_query = read_message(&mut stream);
+            write_message(&mut stream, b"=OK\n");
+        });
+        port
+    }
+
+    #[test]
+    fn streaming_upload_surfaces_early_server_error_and_reuses_connection() {
+        let port = early_upload_response_server(b"!22000!upload rejected by server\n");
+        let connection = Connection::new(test_parameters(port)).unwrap();
+        let mut cursor = connection.cursor();
+
+        let error = cursor
+            .execute_with_streaming_uploads_with_chunk_size(
+                "COPY BINARY",
+                NonZeroUsize::new(1).unwrap(),
+                |_filename, sink| sink.write_chunk(&[1, 2]),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            &error,
+            CursorError::Server(server) if server.sqlstate() == Some("22000")
+        ));
+        assert!(error.to_string().contains("upload rejected by server"));
+        cursor.execute("ROLLBACK").unwrap();
+    }
+
+    #[test]
+    fn streaming_upload_surfaces_unrelated_producer_error_after_early_completion() {
+        let port = early_upload_response_server(b"&2 1\n");
+        let connection = Connection::new(test_parameters(port)).unwrap();
+        let mut cursor = connection.cursor();
+
+        let error = cursor
+            .execute_with_streaming_uploads_with_chunk_size(
+                "COPY BINARY",
+                NonZeroUsize::new(1).unwrap(),
+                |_filename, sink| {
+                    let _ = sink.write_chunk(&[1, 2]);
+                    Err(CursorError::FileTransfer(
+                        "independent producer failure".into(),
+                    ))
+                },
+            )
+            .unwrap_err();
+
+        assert!(error.to_string().contains("independent producer failure"));
+        cursor.execute("ROLLBACK").unwrap();
+    }
+
+    #[test]
+    fn streaming_upload_prefers_server_error_when_producer_also_fails() {
+        let port = early_upload_response_server(b"!22000!primary server failure\n");
+        let connection = Connection::new(test_parameters(port)).unwrap();
+        let mut cursor = connection.cursor();
+
+        let error = cursor
+            .execute_with_streaming_uploads_with_chunk_size(
+                "COPY BINARY",
+                NonZeroUsize::new(1).unwrap(),
+                |_filename, sink| {
+                    let _ = sink.write_chunk(&[1, 2]);
+                    Err(CursorError::FileTransfer(
+                        "secondary producer failure".into(),
+                    ))
+                },
+            )
+            .unwrap_err();
+
+        assert!(error.to_string().contains("primary server failure"));
+        assert!(!error.to_string().contains("secondary producer failure"));
+        cursor.execute("ROLLBACK").unwrap();
+    }
+
     #[test]
     fn upload_prompt_timeout_closes_the_connection() {
         let (port, upload_received, _server_release, disconnected) = upload_server(true);

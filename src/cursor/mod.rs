@@ -376,7 +376,9 @@ impl Cursor {
     /// A producer error before its first call to [`UploadSink::write_chunk`]
     /// refuses that file and preserves the connection. A producer error after
     /// a successful write closes the connection unless MonetDB already
-    /// completed the file and returned to the command response.
+    /// completed the file and returned to the command response. The producer
+    /// runs while the connection operation lock is held and must not call the
+    /// same connection.
     pub fn execute_with_streaming_uploads<F>(
         &mut self,
         statements: &str,
