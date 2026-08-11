@@ -365,10 +365,9 @@ impl Connection {
                 }
                 response.clear();
                 sock = MapiReader::to_limited(sock, &mut response, self.0.max_response_size)?;
-                let expected = if enabled { b"&4 t" } else { b"&4 f" };
                 // MonetDB's clients/mapilib/mapi.c `mapi_Xcommand` treats a
                 // completed empty response as success and reads away optional output.
-                if !response.is_empty() && response.trim_ascii() != expected {
+                if !response.is_empty() && !autocommit_confirmed(&response, enabled) {
                     if let Some(error) = crate::cursor::replies::server_error(&response) {
                         response_error = Some(CursorError::Server(error));
                     } else {
@@ -393,6 +392,15 @@ impl Connection {
     pub fn try_deallocate(&self, statement_id: u64) -> bool {
         self.0.try_queue_deallocate(statement_id)
     }
+}
+
+/// Report whether an `Xauto_commit` response is exactly the requested
+/// autocommit notification. Trailing fields such as the
+/// `error_message_follows` flag MonetDB master added to `&4` are ignored, but
+/// any further line still has to be reported as an unexpected response.
+fn autocommit_confirmed(response: &[u8], enabled: bool) -> bool {
+    let line = response.trim_ascii();
+    !line.contains(&b'\n') && crate::cursor::replies::parse_autocommit_line(line) == Some(enabled)
 }
 
 /// Protocol capabilities negotiated for a live connection.
@@ -760,6 +768,56 @@ mod tests {
                 ) => {}
             other => panic!("connection remained open: {other:?}"),
         }
+    }
+
+    fn autocommit_server(response: &'static [u8]) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        thread::spawn(move || {
+            let mut stream = accept_login(listener);
+            assert!(read_message(&mut stream).starts_with(b"Xauto_commit 0"));
+            write_message(&mut stream, response);
+            let mut byte = [0];
+            let _ = stream.read(&mut byte);
+        });
+        port
+    }
+
+    #[test]
+    fn set_autocommit_accepts_extra_notification_fields() {
+        // MonetDB up to Dec2025-SP3 sends a single field, master appends an
+        // `error_message_follows` flag.
+        for response in [&b"&4 f\n"[..], b"&4 f f\n", b"&4 f t x\n"] {
+            let connection = Connection::new(test_parameters(autocommit_server(response))).unwrap();
+            connection.set_autocommit(false).unwrap();
+            assert!(!connection.server_info().unwrap().autocommit);
+        }
+    }
+
+    #[test]
+    fn set_autocommit_rejects_a_mismatched_notification() {
+        for response in [&b"&4 t\n"[..], b"&4 t t\n", b"&4 unknown f\n", b"&4\n"] {
+            let connection = Connection::new(test_parameters(autocommit_server(response))).unwrap();
+            let error = connection.set_autocommit(false).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    CursorError::BadReply(crate::cursor::replies::BadReply::UnexpectedHeader(_))
+                ),
+                "unexpected error for {:?}: {error:?}",
+                String::from_utf8_lossy(response)
+            );
+            assert!(connection.server_info().unwrap().autocommit);
+        }
+    }
+
+    #[test]
+    fn set_autocommit_reports_a_trailing_server_error() {
+        let connection =
+            Connection::new(test_parameters(autocommit_server(b"&4 f t\n!42000!nope\n"))).unwrap();
+        let error = connection.set_autocommit(false).unwrap_err();
+        assert!(error.to_string().contains("nope"));
+        assert!(connection.server_info().unwrap().autocommit);
     }
 
     #[test]

@@ -9,6 +9,11 @@ New features:
 
 Bug fixes:
 
+- Accept the `&4` autocommit notification that MonetDB master extended with a
+  second field. Only its first field is interpreted, so servers that send
+  `&4 t` and servers that send `&4 t t` are both understood and later fields
+  do not break the client again.
+
 - Preserve the server response and reusable connection when MonetDB rejects a
   streaming upload, and surface unrelated producer failures after early
   completion.
