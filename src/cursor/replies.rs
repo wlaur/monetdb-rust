@@ -57,21 +57,35 @@ pub enum BadReply {
 
 pub type RResult<T> = Result<T, BadReply>;
 
+/// Interpret a single `&4` autocommit notification line.
+///
+/// `sql/backends/monet5/sql_scenario.c` used to write `&4 t`, but MonetDB
+/// master appends an `error_message_follows` flag and writes `&4 t t`. Only
+/// the first field is interpreted and any further fields are ignored, so
+/// later server-side additions do not break this client again. The line must
+/// start with the header: result-set rows can contain `&4 f` as a value.
+pub(crate) fn parse_autocommit_line(line: &[u8]) -> Option<bool> {
+    let rest = line.strip_prefix(b"&4")?;
+    if !rest.first()?.is_ascii_whitespace() {
+        return None;
+    }
+    let flag = rest
+        .split(u8::is_ascii_whitespace)
+        .find(|field| !field.is_empty())?;
+    match flag {
+        b"t" => Some(true),
+        b"f" => Some(false),
+        _ => None,
+    }
+}
+
 pub(crate) fn response_autocommit(response: &[u8]) -> Option<bool> {
-    if !response.starts_with(b"&4 ") && memmem::find(response, b"\n&4 ").is_none() {
+    if !response.starts_with(b"&4") && memmem::find(response, b"\n&4").is_none() {
         return None;
     }
     response
         .split(|byte| *byte == b'\n')
-        .filter_map(|line| {
-            if line == b"&4 f" {
-                Some(false)
-            } else if line == b"&4 t" {
-                Some(true)
-            } else {
-                None
-            }
-        })
+        .filter_map(parse_autocommit_line)
         .next_back()
 }
 
@@ -541,7 +555,7 @@ impl ReplyParser {
 
     fn parse_autocommit_status(mut buf: ReplyBuf) -> RResult<ReplyParser> {
         let line = buf.split_str(b'\n', "header line")?.trim_ascii();
-        if !matches!(line, "&4 f" | "&4 t") {
+        if parse_autocommit_line(line.as_bytes()).is_none() {
             return Err(BadReply::InvalidHeader(format!(
                 "invalid autocommit header: {line}"
             )));
@@ -769,7 +783,9 @@ pub fn from_utf8<'a>(context: &'static str, bytes: &'a [u8]) -> RResult<&'a str>
 mod tests {
     use proptest::prelude::*;
 
-    use super::{BadReply, ReplyParser, ResultSet, response_autocommit, server_error};
+    use super::{
+        BadReply, ReplyParser, ResultSet, parse_autocommit_line, response_autocommit, server_error,
+    };
 
     proptest! {
         #[test]
@@ -791,6 +807,78 @@ mod tests {
         assert_eq!(response_autocommit(b"[ \"&4 f\"\t]\n"), None);
         assert_eq!(response_autocommit(b"&4 false\n"), None);
         assert!(ReplyParser::new(b"&4 false\n".to_vec()).is_err());
+    }
+
+    #[test]
+    fn reads_only_the_first_autocommit_field() {
+        // MonetDB up to Dec2025-SP3 sends a single field.
+        assert_eq!(parse_autocommit_line(b"&4 t"), Some(true));
+        assert_eq!(parse_autocommit_line(b"&4 f"), Some(false));
+        // MonetDB master appends an `error_message_follows` flag.
+        assert_eq!(parse_autocommit_line(b"&4 t t"), Some(true));
+        assert_eq!(parse_autocommit_line(b"&4 f t"), Some(false));
+        assert_eq!(parse_autocommit_line(b"&4 t f"), Some(true));
+        assert_eq!(parse_autocommit_line(b"&4 f f"), Some(false));
+        // Fields the server may add later are ignored as well.
+        assert_eq!(parse_autocommit_line(b"&4 t t x"), Some(true));
+        assert_eq!(parse_autocommit_line(b"&4 f t 1 2 3"), Some(false));
+        // Field separators are arbitrary runs of whitespace.
+        assert_eq!(parse_autocommit_line(b"&4  t   t  "), Some(true));
+        assert_eq!(parse_autocommit_line(b"&4\tf\tt"), Some(false));
+        assert_eq!(parse_autocommit_line(b"&4 t\r"), Some(true));
+        // The first field still has to be exactly `t` or `f`.
+        assert_eq!(parse_autocommit_line(b"&4 true"), None);
+        assert_eq!(parse_autocommit_line(b"&4 T"), None);
+        assert_eq!(parse_autocommit_line(b"&4 x t"), None);
+        assert_eq!(parse_autocommit_line(b"&4 "), None);
+        assert_eq!(parse_autocommit_line(b"&4"), None);
+        assert_eq!(parse_autocommit_line(b"&4t"), None);
+        assert_eq!(parse_autocommit_line(b""), None);
+        // The header is never matched as a substring.
+        assert_eq!(parse_autocommit_line(b" &4 t"), None);
+        assert_eq!(parse_autocommit_line(b"[ \"&4 t\"\t]"), None);
+        assert_eq!(parse_autocommit_line(b"&44 t"), None);
+    }
+
+    #[test]
+    fn accepts_extended_autocommit_status() {
+        assert_eq!(response_autocommit(b"&4 t t\n"), Some(true));
+        assert_eq!(response_autocommit(b"&4 f t\n"), Some(false));
+        assert_eq!(response_autocommit(b"&4 t t\n&4 f t\n"), Some(false));
+        assert_eq!(response_autocommit(b"&2 0\n&4 f t\n"), Some(false));
+        assert_eq!(response_autocommit(b"&4 t t x\n"), Some(true));
+        assert_eq!(response_autocommit(b"[ \"&4 f t\"\t]\n"), None);
+        assert_eq!(response_autocommit(b"&4 maybe t\n"), None);
+    }
+
+    #[test]
+    fn parses_extended_autocommit_header() {
+        for response in [
+            &b"&4 t\n"[..],
+            b"&4 f\n",
+            b"&4 t t\n",
+            b"&4 f t\n",
+            b"&4 t f\n",
+            b"&4  t   t  \n",
+            b"&4 t t x\n",
+        ] {
+            let parser = ReplyParser::new(response.to_vec()).unwrap();
+            assert!(
+                matches!(parser, ReplyParser::Tx { .. }),
+                "unexpected reply for {:?}",
+                String::from_utf8_lossy(response)
+            );
+        }
+        for response in [&b"&4 true t\n"[..], b"&4 x t\n", b"&4t t\n", b"&4\n"] {
+            assert!(
+                matches!(
+                    ReplyParser::new(response.to_vec()),
+                    Err(BadReply::InvalidHeader(_)) | Err(BadReply::UnknownResponse(_))
+                ),
+                "accepted invalid reply {:?}",
+                String::from_utf8_lossy(response)
+            );
+        }
     }
 
     #[test]
