@@ -206,3 +206,76 @@ fn recv_msg(mut conn: impl io::Read) -> io::Result<String> {
     let s: String = String::from_utf8_lossy(&buffer).into();
     Ok(s)
 }
+
+#[test]
+fn repeated_autocommit_setting_preserves_transaction() -> AResult<()> {
+    let ctx = get_server();
+    let conn = ctx.connect()?;
+    let mut cursor = conn.cursor();
+    cursor
+        .execute("CREATE LOCAL TEMPORARY TABLE repeat_autocommit(v INT) ON COMMIT PRESERVE ROWS")?;
+    conn.set_autocommit(false)?;
+    cursor.execute("INSERT INTO repeat_autocommit VALUES (7)")?;
+    conn.set_autocommit(false)?;
+    cursor.execute("SELECT v FROM repeat_autocommit")?;
+    assert!(
+        cursor.next_row()?,
+        "setting the current mode rolled back the transaction"
+    );
+    assert_eq!(cursor.get_i32(0)?, Some(7));
+    cursor.execute("ROLLBACK")?;
+    Ok(())
+}
+
+#[test]
+fn stale_prepared_cleanup_preserves_transaction() -> AResult<()> {
+    let ctx = get_server();
+    let conn = ctx.connect()?;
+    let mut cursor = conn.cursor();
+    cursor.execute("CREATE LOCAL TEMPORARY TABLE stale_cleanup(v INT) ON COMMIT PRESERVE ROWS")?;
+    conn.set_autocommit(false)?;
+    cursor.execute("INSERT INTO stale_cleanup VALUES (7)")?;
+    assert!(conn.try_deallocate(2147483647));
+    cursor.execute("SELECT v FROM stale_cleanup")?;
+    assert!(cursor.next_row()?);
+    assert_eq!(cursor.get_i32(0)?, Some(7));
+    cursor.execute("COMMIT")?;
+    Ok(())
+}
+
+#[test]
+fn autocommit_conflict_updates_state_and_preserves_error() -> AResult<()> {
+    let ctx = get_server();
+    let admin = ctx.connect()?;
+    let mut setup = admin.cursor();
+    setup.execute("DROP TABLE IF EXISTS rust_autocommit_conflict")?;
+    setup.execute("CREATE TABLE rust_autocommit_conflict(id INT PRIMARY KEY)")?;
+    let result = (|| -> AResult<()> {
+        let first = ctx.connect()?;
+        let second = ctx.connect()?;
+        first.set_autocommit(false)?;
+        second.set_autocommit(false)?;
+        first
+            .cursor()
+            .execute("INSERT INTO rust_autocommit_conflict VALUES(1)")?;
+        second
+            .cursor()
+            .execute("INSERT INTO rust_autocommit_conflict VALUES(1)")?;
+        first.cursor().execute("COMMIT")?;
+        let error = second.set_autocommit(true).unwrap_err();
+        assert!(
+            matches!(&error, monetdb::CursorError::Server(e) if e.sqlstate() == Some("40001")),
+            "{error}"
+        );
+        assert!(
+            second.server_info()?.autocommit,
+            "server enables autocommit even when its implicit commit conflicts"
+        );
+        second
+            .cursor()
+            .execute("INSERT INTO rust_autocommit_conflict VALUES(2)")?;
+        Ok(())
+    })();
+    setup.execute("DROP TABLE rust_autocommit_conflict")?;
+    result
+}
