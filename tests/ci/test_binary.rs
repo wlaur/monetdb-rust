@@ -23,9 +23,7 @@ fn test_binary_result_window_and_server_info() -> Result<()> {
     let info = connection.server_info()?;
     assert_eq!(info.endian, Endian::Lit);
     assert_eq!(info.reply_size, 1);
-    if info.binary_level < 1 {
-        return Ok(());
-    }
+    assert!(info.binary_level >= 1);
 
     let mut cursor = connection.cursor();
     cursor.execute(
@@ -88,9 +86,7 @@ fn test_binary_payload_cannot_change_cached_autocommit() -> Result<()> {
     let mut parameters = get_server().parms();
     parameters.set_replysize(1)?;
     let connection = monetdb::Connection::new(parameters)?;
-    if connection.server_info()?.binary_level < 1 {
-        return Ok(());
-    }
+    assert!(connection.server_info()?.binary_level >= 1);
 
     let mut cursor = connection.cursor();
     cursor.execute("SELECT s FROM (VALUES (1, 'safe'), (2, '\n&4 f')) AS t(i, s) ORDER BY i")?;
@@ -111,9 +107,7 @@ fn test_inline_result_reports_not_resident() -> Result<()> {
     let mut parameters = get_server().parms();
     parameters.set_replysize(1)?;
     let connection = monetdb::Connection::new(parameters)?;
-    if connection.server_info()?.binary_level < 1 {
-        return Ok(());
-    }
+    assert!(connection.server_info()?.binary_level >= 1);
 
     let mut cursor = connection.cursor();
     cursor.execute("SELECT 42")?;
@@ -136,9 +130,7 @@ fn test_inline_result_reports_not_resident() -> Result<()> {
 #[test]
 fn test_empty_result_reports_not_resident() -> Result<()> {
     let connection = get_server().connect()?;
-    if connection.server_info()?.binary_level < 1 {
-        return Ok(());
-    }
+    assert!(connection.server_info()?.binary_level >= 1);
 
     let mut cursor = connection.cursor();
     cursor.execute("SELECT 42 WHERE FALSE")?;
