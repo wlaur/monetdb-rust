@@ -30,7 +30,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 // Example output:
 // host=Some("totoro") clientpid=Some(1895691) client=Some("libmapi 11.55.9") remark=None
-// host=Some("totoro") clientpid=Some(1914127) client=Some("monetdb-rust 0.1.1") remark=None
+// host=Some("totoro") clientpid=Some(1914127) client=Some("monetdb-rust 0.2.2-wlaur.1") remark=None
 ```
 
 You can also use a [`Parameters`] object to fine-tune the connection parameters:
@@ -57,7 +57,8 @@ Current status
 * The supported server baseline is MonetDB Dec2025-SP4 (11.55.9).
   Integration tests use the pinned native ARM64 release image.
 
-* Rust 2024 edition; current stable Rust is the supported toolchain.
+* Rust 2024 edition; Rust 1.85 is the minimum supported version, and CI also
+  tests current stable, beta, and nightly.
 
 * The full `monetdb://` connection URL syntax is supported, though not all features have been implemented.
 

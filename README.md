@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 // Example output:
 // host=Some("totoro") clientpid=Some(1895691) client=Some("libmapi 11.55.9") remark=None
-// host=Some("totoro") clientpid=Some(1914127) client=Some("monetdb-rust 0.1.1") remark=None
+// host=Some("totoro") clientpid=Some(1914127) client=Some("monetdb-rust 0.2.2-wlaur.1") remark=None
 ```
 
 You can also use a `Parameters` object to fine-tune the connection parameters:
