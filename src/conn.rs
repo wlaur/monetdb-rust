@@ -785,8 +785,7 @@ mod tests {
 
     #[test]
     fn set_autocommit_accepts_extra_notification_fields() {
-        // MonetDB up to Dec2025-SP3 sends a single field, master appends an
-        // `error_message_follows` flag.
+        // The first field reports autocommit; trailing notification fields are ignored.
         for response in [&b"&4 f\n"[..], b"&4 f f\n", b"&4 f t x\n"] {
             let connection = Connection::new(test_parameters(autocommit_server(response))).unwrap();
             connection.set_autocommit(false).unwrap();
