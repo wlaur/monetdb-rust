@@ -27,7 +27,7 @@ fn test_metadata() -> AResult<()> {
     let conn = Connection::new(parms)?;
     let metadata = conn.metadata()?;
     let version = metadata.version();
-    assert!(version >= (11, 3, 3));
+    assert!(version >= (11, 55, 9));
     assert_some!(metadata.env("monet_release"));
     Ok(())
 }
@@ -49,12 +49,6 @@ fn test_configured_schema() -> AResult<()> {
 fn test_client_info() -> AResult<()> {
     let ctx = get_server();
     let mut parms: Parameters = ctx.parms();
-    let probe = Connection::new(parms.clone())?;
-    if probe.metadata()?.version() < (11, 51, 0) {
-        return Ok(());
-    }
-    probe.close();
-
     parms.set_client_prefix("integration-client 1.0")?;
     parms.set_client_application("monetdb-rust-tests")?;
     parms.set_client_remark("client-info-integration")?;

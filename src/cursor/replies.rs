@@ -811,10 +811,10 @@ mod tests {
 
     #[test]
     fn reads_only_the_first_autocommit_field() {
-        // MonetDB up to Dec2025-SP3 sends a single field.
+        // The first field reports autocommit.
         assert_eq!(parse_autocommit_line(b"&4 t"), Some(true));
         assert_eq!(parse_autocommit_line(b"&4 f"), Some(false));
-        // MonetDB master appends an `error_message_follows` flag.
+        // Additional notification fields do not change autocommit.
         assert_eq!(parse_autocommit_line(b"&4 t t"), Some(true));
         assert_eq!(parse_autocommit_line(b"&4 f t"), Some(false));
         assert_eq!(parse_autocommit_line(b"&4 t f"), Some(true));

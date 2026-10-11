@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 // Example output:
-// host=Some("totoro") clientpid=Some(1895691) client=Some("libmapi 11.51.4") remark=None
+// host=Some("totoro") clientpid=Some(1895691) client=Some("libmapi 11.55.9") remark=None
 // host=Some("totoro") clientpid=Some(1914127) client=Some("monetdb-rust 0.1.1") remark=None
 ```
 
@@ -57,8 +57,8 @@ parameters to customize those values, or `client_info=false` to disable them.
 Current status
 --------------
 
-* The client is tested against current MonetDB and selected older releases.
-  Compatibility outside the tested matrix is not guaranteed.
+* The supported server baseline is MonetDB Dec2025-SP4 (11.55.9).
+  Integration tests use the pinned native ARM64 release image.
 
 * Rust 2024 edition; Rust 1.85 is the minimum supported version, and CI also
   tests current stable, beta, and nightly.

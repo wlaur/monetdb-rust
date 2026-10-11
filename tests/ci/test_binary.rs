@@ -23,9 +23,7 @@ fn test_binary_result_window_and_server_info() -> Result<()> {
     let info = connection.server_info()?;
     assert_eq!(info.endian, Endian::Lit);
     assert_eq!(info.reply_size, 1);
-    if info.binary_level < 1 {
-        return Ok(());
-    }
+    assert!(info.binary_level >= 1);
 
     let mut cursor = connection.cursor();
     cursor.execute(
@@ -88,9 +86,7 @@ fn test_binary_payload_cannot_change_cached_autocommit() -> Result<()> {
     let mut parameters = get_server().parms();
     parameters.set_replysize(1)?;
     let connection = monetdb::Connection::new(parameters)?;
-    if connection.server_info()?.binary_level < 1 {
-        return Ok(());
-    }
+    assert!(connection.server_info()?.binary_level >= 1);
 
     let mut cursor = connection.cursor();
     cursor.execute("SELECT s FROM (VALUES (1, 'safe'), (2, '\n&4 f')) AS t(i, s) ORDER BY i")?;
@@ -111,9 +107,7 @@ fn test_inline_result_reports_not_resident() -> Result<()> {
     let mut parameters = get_server().parms();
     parameters.set_replysize(1)?;
     let connection = monetdb::Connection::new(parameters)?;
-    if connection.server_info()?.binary_level < 1 {
-        return Ok(());
-    }
+    assert!(connection.server_info()?.binary_level >= 1);
 
     let mut cursor = connection.cursor();
     cursor.execute("SELECT 42")?;
@@ -136,9 +130,7 @@ fn test_inline_result_reports_not_resident() -> Result<()> {
 #[test]
 fn test_empty_result_reports_not_resident() -> Result<()> {
     let connection = get_server().connect()?;
-    if connection.server_info()?.binary_level < 1 {
-        return Ok(());
-    }
+    assert!(connection.server_info()?.binary_level >= 1);
 
     let mut cursor = connection.cursor();
     cursor.execute("SELECT 42 WHERE FALSE")?;
@@ -202,9 +194,6 @@ fn test_failed_delayed_deallocate_preserves_connection() -> Result<()> {
 #[test]
 fn test_binary_uploads() -> Result<()> {
     let connection = get_server().connect()?;
-    if connection.metadata()?.version() < (11, 41, 0) {
-        return Ok(());
-    }
     let mut cursor = connection.cursor();
     cursor.execute("DROP TABLE IF EXISTS monetdb_rust_binary_upload")?;
     cursor.execute("CREATE TABLE monetdb_rust_binary_upload(i INT, s VARCHAR(8))")?;
@@ -241,9 +230,6 @@ fn test_binary_uploads() -> Result<()> {
 #[test]
 fn test_lazy_binary_uploads() -> Result<()> {
     let connection = get_server().connect()?;
-    if connection.metadata()?.version() < (11, 41, 0) {
-        return Ok(());
-    }
     let mut cursor = connection.cursor();
     cursor.execute("DROP TABLE IF EXISTS monetdb_rust_lazy_binary_upload")?;
     cursor.execute("CREATE TABLE monetdb_rust_lazy_binary_upload(i INT, s VARCHAR(8))")?;
@@ -281,9 +267,6 @@ fn test_lazy_binary_uploads() -> Result<()> {
 #[test]
 fn test_streaming_binary_uploads() -> Result<()> {
     let connection = get_server().connect()?;
-    if connection.metadata()?.version() < (11, 41, 0) {
-        return Ok(());
-    }
     let mut cursor = connection.cursor();
     cursor.execute("DROP TABLE IF EXISTS monetdb_rust_streaming_binary_upload")?;
     cursor.execute("CREATE TABLE monetdb_rust_streaming_binary_upload(i INT, s VARCHAR(8))")?;
@@ -325,9 +308,6 @@ fn test_streaming_binary_uploads() -> Result<()> {
 #[test]
 fn test_streaming_upload_failure_after_data_closes_connection() -> Result<()> {
     let connection = get_server().connect()?;
-    if connection.metadata()?.version() < (11, 41, 0) {
-        return Ok(());
-    }
     let mut cursor = connection.cursor();
     cursor.execute("DROP TABLE IF EXISTS monetdb_rust_failed_streaming_upload")?;
     cursor.execute("CREATE TABLE monetdb_rust_failed_streaming_upload(i INT)")?;
@@ -362,9 +342,6 @@ fn test_streaming_upload_failure_after_data_closes_connection() -> Result<()> {
 #[test]
 fn test_empty_binary_upload_preserves_connection() -> Result<()> {
     let connection = get_server().connect()?;
-    if connection.metadata()?.version() < (11, 41, 0) {
-        return Ok(());
-    }
     let mut cursor = connection.cursor();
     cursor.execute("DROP TABLE IF EXISTS monetdb_rust_empty_binary_upload")?;
     cursor.execute("CREATE TABLE monetdb_rust_empty_binary_upload(i INT)")?;
@@ -385,9 +362,6 @@ fn test_empty_binary_upload_preserves_connection() -> Result<()> {
 #[test]
 fn test_empty_in_memory_binary_upload_preserves_connection() -> Result<()> {
     let connection = get_server().connect()?;
-    if connection.metadata()?.version() < (11, 41, 0) {
-        return Ok(());
-    }
     let mut cursor = connection.cursor();
     cursor.execute("DROP TABLE IF EXISTS monetdb_rust_empty_in_memory_binary_upload")?;
     cursor.execute("CREATE TABLE monetdb_rust_empty_in_memory_binary_upload(i INT)")?;
@@ -409,9 +383,6 @@ fn test_empty_in_memory_binary_upload_preserves_connection() -> Result<()> {
 #[test]
 fn test_server_completion_during_binary_upload_preserves_connection() -> Result<()> {
     let connection = get_server().connect()?;
-    if connection.metadata()?.version() < (11, 41, 0) {
-        return Ok(());
-    }
     let mut cursor = connection.cursor();
     cursor.execute("DROP TABLE IF EXISTS monetdb_rust_completed_binary_upload")?;
     cursor.execute("CREATE TABLE monetdb_rust_completed_binary_upload(i INT)")?;
@@ -437,9 +408,6 @@ fn test_server_completion_during_binary_upload_preserves_connection() -> Result<
 #[test]
 fn test_early_upload_completion_is_not_matched_by_error_text() -> Result<()> {
     let connection = get_server().connect()?;
-    if connection.metadata()?.version() < (11, 41, 0) {
-        return Ok(());
-    }
     let mut cursor = connection.cursor();
     cursor.execute("DROP TABLE IF EXISTS monetdb_rust_structured_upload_completion")?;
     cursor.execute("CREATE TABLE monetdb_rust_structured_upload_completion(i INT)")?;
@@ -470,9 +438,6 @@ fn test_early_upload_completion_is_not_matched_by_error_text() -> Result<()> {
 #[test]
 fn test_refused_binary_upload_preserves_connection() -> Result<()> {
     let connection = get_server().connect()?;
-    if connection.metadata()?.version() < (11, 41, 0) {
-        return Ok(());
-    }
     let mut cursor = connection.cursor();
     cursor.execute("DROP TABLE IF EXISTS monetdb_rust_refused_binary_upload")?;
     cursor.execute("CREATE TABLE monetdb_rust_refused_binary_upload(i INT)")?;
@@ -500,9 +465,6 @@ fn test_refused_binary_upload_preserves_connection() -> Result<()> {
 #[test]
 fn test_server_abort_during_binary_upload_preserves_connection() -> Result<()> {
     let connection = get_server().connect()?;
-    if connection.metadata()?.version() < (11, 41, 0) {
-        return Ok(());
-    }
     let mut cursor = connection.cursor();
     cursor.execute("DROP TABLE IF EXISTS monetdb_rust_aborted_binary_upload")?;
     cursor.execute("CREATE TABLE monetdb_rust_aborted_binary_upload(i INT)")?;
@@ -531,9 +493,6 @@ fn test_server_abort_during_binary_upload_preserves_connection() -> Result<()> {
 #[test]
 fn test_raw_client_file_transfers_are_refused_without_desynchronizing() -> Result<()> {
     let connection = get_server().connect()?;
-    if connection.metadata()?.version() < (11, 41, 0) {
-        return Ok(());
-    }
     let mut cursor = connection.cursor();
     cursor.execute("DROP TABLE IF EXISTS monetdb_rust_raw_client_copy")?;
     cursor.execute("CREATE TABLE monetdb_rust_raw_client_copy(i INT)")?;

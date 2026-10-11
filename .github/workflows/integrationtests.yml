@@ -6,7 +6,7 @@
 #
 # Copyright 2024 MonetDB Foundation
 
-# Run the integration tests with various versions of MonetDB
+# Run the integration tests against the supported MonetDB release
 name: Integration tests
 
 on:
@@ -24,19 +24,17 @@ env:
 jobs:
 
   monetdb_version:
-    runs-on: ubuntu-latest
-    container: python:3.11
+    name: MonetDB Dec2025-SP4
+    runs-on: ubuntu-24.04-arm
+    container: python:3.13
     env:
       CI_SERVER_URL: monetdb://monetdb/monetdb
-    strategy:
-      fail-fast: false
-      matrix:
-        monetdbversion: [ default, Aug2024, Jun2020 ]
     services:
       monetdb:
-        image: "monetdb/dev-builds:${{ matrix.monetdbversion }}"
+        image: wlaur/monetdb-container:11.55.9-1@sha256:b7238498164cd26a0b7bd9391d51948dca5c69f490f888186d3204320abaecf7
         env:
           MDB_DB_ADMIN_PASS: monetdb
+          MDB_CREATE_DBS: monetdb
         options: >-
           --tmpfs /var/monetdb5/dbfarm:rw,size=2147483648,mode=0777
         ports:
