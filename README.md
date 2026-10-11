@@ -152,3 +152,13 @@ Testing
 server. Run `cargo test --all-features --lib` and
 `cargo test --all-features --doc` when checking every library feature without
 a server.
+
+## Transaction control
+
+`set_autocommit` leaves a transaction intact when the requested mode is already active.
+MonetDB applies a mode change before finalizing the transaction, so enabling autocommit
+can return a concurrency-conflict error while `server_info().autocommit` is already true.
+Retry the complete transaction after a conflict; the client does not replay writes.
+
+Prepared-statement cleanup uses MAPI `Xrelease`, which tolerates handles invalidated by
+concurrent schema changes without aborting the current SQL transaction.

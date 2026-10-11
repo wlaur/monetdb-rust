@@ -352,6 +352,9 @@ impl Connection {
         let mut response_error = None;
         self.0
             .run_locked_with_timeouts(timeouts, |state, delayed, mut sock| {
+                if state.autocommit == enabled {
+                    return Ok(sock);
+                }
                 let mut response = Vec::new();
                 sock = delayed.send_delayed_plus(
                     sock,
@@ -369,6 +372,10 @@ impl Connection {
                 // completed empty response as success and reads away optional output.
                 if !response.is_empty() && !autocommit_confirmed(&response, enabled) {
                     if let Some(error) = crate::cursor::replies::server_error(&response) {
+                        // SQLchannelcmd sets the mode before committing or rolling back:
+                        // https://github.com/MonetDB/MonetDB/blob/Dec2025_SP4_release/sql/backends/monet5/sql_scenario.c
+                        state.autocommit = crate::cursor::replies::response_autocommit(&response)
+                            .unwrap_or(enabled);
                         response_error = Some(CursorError::Server(error));
                     } else {
                         response_error = Some(CursorError::BadReply(
@@ -503,7 +510,7 @@ impl Conn {
             }
         };
         for statement_id in pending_deallocates {
-            delayed.add_cleanup("deallocate", format_args!("sDEALLOCATE {statement_id}\n;"));
+            delayed.add_xcommand_cleanup("release", statement_id);
         }
         let result = f(state, delayed, sock);
         let operation_timed_out = self.operation_watchdog.disarm(watchdog_token);
@@ -593,7 +600,9 @@ impl Conn {
         }
         guard
             .delayed
-            .add_cleanup("deallocate", format_args!("sDEALLOCATE {statement_id}\n;"));
+            // SQLchannelcmd's Xrelease tolerates absent handles without aborting SQL transactions:
+            // https://github.com/MonetDB/MonetDB/blob/Dec2025_SP4_release/sql/backends/monet5/sql_scenario.c
+            .add_xcommand_cleanup("release", statement_id);
         true
     }
 }
@@ -816,7 +825,7 @@ mod tests {
             Connection::new(test_parameters(autocommit_server(b"&4 f t\n!42000!nope\n"))).unwrap();
         let error = connection.set_autocommit(false).unwrap_err();
         assert!(error.to_string().contains("nope"));
-        assert!(connection.server_info().unwrap().autocommit);
+        assert!(!connection.server_info().unwrap().autocommit);
     }
 
     #[test]
